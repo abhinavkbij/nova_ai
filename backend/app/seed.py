@@ -41,14 +41,52 @@ def seed_database(db):
     ])
 
     db.add_all([
-        IndirectActivity(name="Break-Lunch", category="Break"),
-        IndirectActivity(name="Break-break", category="Break"),
-        IndirectActivity(name="Shop Admin Meetings", category="Admin"),
-        IndirectActivity(name="Chain Tire Dismount/Mount", category="Service"),
-        IndirectActivity(name="Blood Drive", category="Event"),
-        IndirectActivity(name="Parts Pickup", category="Parts"),
-        IndirectActivity(name="Safety Training", category="Training"),
-        IndirectActivity(name="Vehicle Wash", category="Service"),
+        IndirectActivity(name="Chain Tire Dismount / Mount",           category="Tire",         repair_group_component_action_id=39182),
+        IndirectActivity(name="Shop Admin D & A Testing",              category="Shop Admin",   repair_group_component_action_id=39100),
+        IndirectActivity(name="Shop Admin Meetings",                   category="Shop Admin",   repair_group_component_action_id=39101),
+        IndirectActivity(name="Shop Admin Clerical",                   category="Shop Admin",   repair_group_component_action_id=39102),
+        IndirectActivity(name="Shop Admin Blood Drive",                category="Shop Admin",   repair_group_component_action_id=39103),
+        IndirectActivity(name="Shop Admin Fleet Equipment Setup",      category="Shop Admin",   repair_group_component_action_id=39104),
+        IndirectActivity(name="Shop Admin Doctor Workers Comp",        category="Shop Admin",   repair_group_component_action_id=39187),
+        IndirectActivity(name="Shop Admin ASE Testing",                category="Shop Admin",   repair_group_component_action_id=39186),
+        IndirectActivity(name="Break -Break",                          category="Break",        repair_group_component_action_id=39105),
+        IndirectActivity(name="Break -Lunch",                          category="Break",        repair_group_component_action_id=39106),
+        IndirectActivity(name="Fuel System Support Diagnosis",         category="Fuel",         repair_group_component_action_id=39107),
+        IndirectActivity(name="Fuel System Support Repair",            category="Fuel",         repair_group_component_action_id=39108),
+        IndirectActivity(name="Fuel System Support Nozzle",            category="Fuel",         repair_group_component_action_id=39109),
+        IndirectActivity(name="Fuel System Support Hose",              category="Fuel",         repair_group_component_action_id=39110),
+        IndirectActivity(name="Union Business Meetings",               category="Union",        repair_group_component_action_id=39111),
+        IndirectActivity(name="Training Time Training",                category="Training",     repair_group_component_action_id=39112),
+        IndirectActivity(name="Training Time CDL",                     category="Training",     repair_group_component_action_id=39113),
+        IndirectActivity(name="Training Time Video- In house",         category="Training",     repair_group_component_action_id=39114),
+        IndirectActivity(name="Wait Time For OK To Begin Job",         category="Wait Time",    repair_group_component_action_id=39115),
+        IndirectActivity(name="Wait Time For Job Assignment",          category="Wait Time",    repair_group_component_action_id=39116),
+        IndirectActivity(name="Wait Time For Repair Space",            category="Wait Time",    repair_group_component_action_id=39117),
+        IndirectActivity(name="Shop Operations Diagnosis",             category="Shop Ops",     repair_group_component_action_id=39118),
+        IndirectActivity(name="Shop Operations Mowing",                category="Shop Ops",     repair_group_component_action_id=39119),
+        IndirectActivity(name="Shop Operations Move / Transport",      category="Shop Ops",     repair_group_component_action_id=39120),
+        IndirectActivity(name="Shop Operations Pick Up Unit",          category="Shop Ops",     repair_group_component_action_id=39121),
+        IndirectActivity(name="Shop Operations Deliver Unit",          category="Shop Ops",     repair_group_component_action_id=39122),
+        IndirectActivity(name="Shop Operations WorkStation Clean Up",  category="Shop Ops",     repair_group_component_action_id=39123),
+        IndirectActivity(name="Shop Operations Janitorial",            category="Shop Ops",     repair_group_component_action_id=39124),
+        IndirectActivity(name="Shop Operations Vehicle Cleaning",      category="Shop Ops",     repair_group_component_action_id=39125),
+        IndirectActivity(name="Shop Operations Steam Clean",           category="Shop Ops",     repair_group_component_action_id=39126),
+        IndirectActivity(name="Shop Operations Used Part Remove",      category="Shop Ops",     repair_group_component_action_id=39127),
+        IndirectActivity(name="Shop Operations Fueling Operation",     category="Shop Ops",     repair_group_component_action_id=39128),
+        IndirectActivity(name="Shop Operations Fuel Pump Reading",     category="Shop Ops",     repair_group_component_action_id=39129),
+        IndirectActivity(name="Shop Operations Re-Stocking Oil",       category="Shop Ops",     repair_group_component_action_id=39130),
+        IndirectActivity(name="Shop Operations Snow Removal",          category="Shop Ops",     repair_group_component_action_id=39131),
+        IndirectActivity(name="Shop Operations Shop Equipment Repair", category="Shop Ops",     repair_group_component_action_id=39132),
+        IndirectActivity(name="Shop Operations Receiving Tires",       category="Shop Ops",     repair_group_component_action_id=39133),
+        IndirectActivity(name="Shop Operations Tire Inventory",        category="Shop Ops",     repair_group_component_action_id=39134),
+        IndirectActivity(name="Shop Operations Finding Unit",          category="Shop Ops",     repair_group_component_action_id=39135),
+        IndirectActivity(name="Shop Operations Parts Run",             category="Shop Ops",     repair_group_component_action_id=39136),
+        IndirectActivity(name="Shop Operations Pop Machine",           category="Shop Ops",     repair_group_component_action_id=39137),
+        IndirectActivity(name="TIRE M/D Stock",                        category="Tire",         repair_group_component_action_id=39138),
+        IndirectActivity(name="TIRE Move / Transport",                 category="Tire",         repair_group_component_action_id=39176),
+        IndirectActivity(name="Leave Time Annual",                     category="Leave",        repair_group_component_action_id=39224),
+        IndirectActivity(name="Leave Time Sick",                       category="Leave",        repair_group_component_action_id=39225),
+        IndirectActivity(name="Leave Time Workers Comp",               category="Leave",        repair_group_component_action_id=39226),
     ])
 
     db.flush()
@@ -136,16 +174,16 @@ def seed_database(db):
 
     # ── Work order repairs for demo technician ───────────────────────────────
     vehicles = [
-        ("Ford", "F-150", "1FTFW1EG0MFA12345", "TIR-001"),
-        ("Chevrolet", "Silverado", "3GCUKREC5EG123456", "BRK-002"),
-        ("Toyota", "Camry", "4T1BF1FK0EU123456", "OIL-001"),
-        ("Honda", "Accord", "1HGCR2F87EA123456", "TRN-003"),
-        ("Dodge", "Ram 1500", "1C6RR7LT0ES123456", "ENG-005"),
-        ("Ford", "Explorer", "1FM5K8GT0EGA12345", "EXH-002"),
-        ("GMC", "Sierra", "1GTV2MEC5EZ123456", "SUS-001"),
-        ("Nissan", "Frontier", "1N6AD0ER5CC123456", "CLU-001"),
-        ("Jeep", "Wrangler", "1C4HJWDG0GL123456", "TIR-002"),
-        ("Ram", "ProMaster", "3C6TRVBG0EE123456", "HTR-001"),
+        (2021, "Ford", "F-150", "1FTFW1EG0MFA12345", "TIR-001"),
+        (2019, "Chevrolet", "Silverado 1500", "3GCUKREC5EG123456", "BRK-002"),
+        (2020, "Toyota", "Camry", "4T1BF1FK0EU123456", "OIL-001"),
+        (2018, "Honda", "Accord", "1HGCR2F87EA123456", "TRN-003"),
+        (2022, "Dodge", "Ram 1500", "1C6RR7LT0ES123456", "ENG-005"),
+        (2017, "Ford", "Explorer", "1FM5K8GT0EGA12345", "EXH-002"),
+        (2023, "GMC", "Sierra 1500", "1GTV2MEC5EZ123456", "SUS-001"),
+        (2016, "Nissan", "Frontier", "1N6AD0ER5CC123456", "CLU-001"),
+        (2020, "Jeep", "Wrangler", "1C4HJWDG0GL123456", "TIR-002"),
+        (2019, "Ram", "ProMaster", "3C6TRVBG0EE123456", "HTR-001"),
     ]
 
     repair_titles = [
@@ -170,7 +208,7 @@ def seed_database(db):
     wo_statuses = ["A", "A", "A", "H", "A", "C", "A", "W", "A", "A"]
 
     repairs = []
-    for idx, (make, model, vin, rcode) in enumerate(vehicles):
+    for idx, (year, make, model, vin, rcode) in enumerate(vehicles):
         date_in = datetime.now(timezone.utc) - timedelta(days=idx, hours=3)
         shift_id = active_shift.id if idx < 7 else past_shift.id
         is_open = wo_statuses[idx] != "C"
@@ -178,6 +216,7 @@ def seed_database(db):
             wo_number=f"WO-2024-{1000 + idx:04d}",
             wo_status_code=wo_statuses[idx],
             title=repair_titles[idx],
+            asset_year=year,
             asset_make=make,
             asset_model=model,
             vin=vin,
@@ -198,26 +237,29 @@ def seed_database(db):
     # ── Tasks for first two repairs ─────────────────────────────────────────
     task_templates = [
         [
-            ("Inspect tire tread depth and sidewall condition", 1),
-            ("Check wheel balance using balancer machine", 2),
-            ("Rotate tires per manufacturer specification", 3),
-            ("Torque lug nuts to spec", 4),
+            ("Inspect tire tread depth and sidewall condition", 1, "Measure tread depth at 3 points per tire; check for cracking or bulging on sidewalls.", True),
+            ("Check wheel balance using balancer machine", 2, "Mount each wheel on balancer and add weights as needed to within 0.25 oz.", True),
+            ("Rotate tires per manufacturer specification", 3, "Follow cross-rotation pattern per OEM spec in service manual.", True),
+            ("Torque lug nuts to spec", 4, "Torque to 100 ft-lb in star pattern; verify with torque stick.", True),
         ],
         [
-            ("Inspect brake pad thickness", 1),
-            ("Check rotor for scoring or warping", 2),
-            ("Remove caliper and replace brake pads", 3),
-            ("Bed-in brake pads with moderate stops", 4),
+            ("Inspect brake pad thickness", 1, "Measure pad thickness; replace if below 3mm.", True),
+            ("Check rotor for scoring or warping", 2, "Measure rotor thickness and run-out; replace if beyond discard spec.", True),
+            ("Remove caliper and replace brake pads", 3, "Compress piston, install new pads, lubricate slide pins.", True),
+            ("Bed-in brake pads with moderate stops", 4, "Perform 10 moderate stops from 35 mph per manufacturer break-in procedure.", True),
         ],
     ]
     for r_idx, task_list in enumerate(task_templates):
-        for title, step in task_list:
+        for task_name, step, instruction, has_instruction in task_list:
             db.add(Task(
                 repair_id=repairs[r_idx].id,
                 step_number=step,
-                title=title,
+                task_name=task_name,
                 result_id=None,
+                result_name=None,
                 comment=None,
+                instruction=instruction,
+                has_instruction=has_instruction,
             ))
 
     # ── Notes for first repair ───────────────────────────────────────────────

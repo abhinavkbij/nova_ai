@@ -11,6 +11,7 @@ class WorkOrderRepair(Base):
     wo_number = Column(String, nullable=True)
     wo_status_code = Column(String, default="A")
     title = Column(String, nullable=False)
+    asset_year = Column(Integer, nullable=True)
     asset_make = Column(String, nullable=True)
     asset_model = Column(String, nullable=True)
     vin = Column(String, nullable=True)
@@ -39,9 +40,12 @@ class Task(Base):
     id = Column(Integer, primary_key=True, index=True)
     repair_id = Column(Integer, ForeignKey("work_order_repairs.id"), nullable=True)
     step_number = Column(Integer, nullable=True)
+    task_name = Column(String, nullable=True)
     result_id = Column(Integer, nullable=True)
+    result_name = Column(String, nullable=True)
     comment = Column(Text, nullable=True)
-    title = Column(String, nullable=True)
+    instruction = Column(Text, nullable=True)
+    has_instruction = Column(Boolean, default=False)
 
     repair = relationship("WorkOrderRepair", back_populates="tasks")
 

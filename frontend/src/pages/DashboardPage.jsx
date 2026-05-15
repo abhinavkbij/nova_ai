@@ -2,10 +2,12 @@ import { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
   Home, Wrench, Package, QrCode, HelpCircle,
-  Clock, ChevronDown, ChevronRight, LayoutGrid, List,
+  Clock, ChevronDown, ChevronRight, LayoutGrid, List, X,
   Search, ArrowRight
 } from 'lucide-react';
-import { WORK_ORDERS, PARTS_REQUESTS, CURRENT_TECHNICIAN } from '../data/mockData';
+import { CURRENT_TECHNICIAN } from '../data/mockData';
+import { getTechnicianRepairs, getWorkOrderRepair } from '../api/workOrders';
+import { getPartsMessages, getRequestedParts } from '../api/parts';
 import IndirectActivityModal from '../components/IndirectActivityModal';
 import NovaAssistant from '../components/NovaAssistant';
 
@@ -21,8 +23,11 @@ function formatDuration(ms) {
 const PRIORITY_STYLES = {
   LOW:    'bg-green-50 text-green-700 border-green-200',
   MEDIUM: 'bg-blue-50 text-blue-700 border-blue-200',
+  MED:    'bg-blue-50 text-blue-700 border-blue-200',
   HIGH:   'bg-orange-50 text-orange-700 border-orange-200',
   URGENT: 'bg-red-50 text-red-700 border-red-200',
+  RED:    'bg-red-50 text-red-700 border-red-200',
+  WP:     'bg-slate-50 text-slate-700 border-slate-200',
 };
 
 const PARTS_STYLES = {
@@ -36,6 +41,57 @@ const STATUS_STYLES = {
   Issued:    'bg-green-50 text-green-700 border-green-200',
   Cancelled: 'bg-gray-100 text-gray-500 border-gray-200',
 };
+
+function formatRepairDate(value) {
+  if (!value) return '--';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '--';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function normalizePriority(priority) {
+  const value = (priority || '').toUpperCase();
+  if (value === 'MED') return 'MEDIUM';
+  if (value === 'RED') return 'URGENT';
+  return value || 'LOW';
+}
+
+function mapFasterWebRepair(item) {
+  const titleParts = [item.actionDesc, item.groupDesc, item.componentDesc].filter(Boolean);
+  const asset = [item.yearMake, item.model].filter(Boolean).join(' ');
+
+  return {
+    id: item.repairId,
+    repairId: item.repairId,
+    woNumber: item.documentNumber || item.assetNumber || String(item.documentId ?? ''),
+    woStatus: item.workOrderStatusCode || '',
+    title: titleParts.join(' ') || item.componentDesc || `Repair ${item.repairId}`,
+    priority: normalizePriority(item.priority),
+    priorityCode: item.priority || '',
+    priorityDesc: item.priorityDesc || '',
+    partsStatus: item.hasParts ? 'PARTS ASSIGNED' : 'PARTS UNASSIGNED',
+    asset: asset || '--',
+    assetId: item.assetNumber || item.assetId || '--',
+    repairCode: item.repairScheduleID || String(item.repairId ?? ''),
+    shop: item.maintShop || item.maintShopDesc || '--',
+    timeStandard: item.timeStandardHours == null ? '--' : `${Number(item.timeStandardHours).toFixed(1)}h`,
+    dateIn: formatRepairDate(item.inDate),
+    isOpen: item.status !== 'Complete',
+    rawStatus: item.status,
+  };
+}
+
+function mapPartRequest(part) {
+  return {
+    id: part.id,
+    status: part.statusName || 'Requested',
+    name: part.partName || '--',
+    description: part.requestComment || '--',
+    partId: part.partId || '--',
+    repairCode: part.repairCode || '--',
+    woNumber: part.woNumber || '--',
+  };
+}
 
 export default function DashboardPage() {
   const location = useLocation();
@@ -53,6 +109,18 @@ export default function DashboardPage() {
   const [currentActivity, setCurrentActivity] = useState('Blood Drive');
   const [category, setCategory] = useState('');
   const [searchText, setSearchText] = useState('');
+  const [repairs, setRepairs] = useState([]);
+  const [repairsLoading, setRepairsLoading] = useState(false);
+  const [repairsError, setRepairsError] = useState('');
+  const [repairCounts, setRepairCounts] = useState({ open: 0, closed: 0 });
+  const [parts, setParts] = useState([]);
+  const [partsCounts, setPartsCounts] = useState({ requested: 0, issued: 0, delayed: 0 });
+  const [partsLoading, setPartsLoading] = useState(false);
+  const [partsError, setPartsError] = useState('');
+  const [partsMessages, setPartsMessages] = useState([]);
+  const [selectedRepair, setSelectedRepair] = useState(null);
+  const [repairDetailLoading, setRepairDetailLoading] = useState(false);
+  const [repairDetailError, setRepairDetailError] = useState('');
 
   useEffect(() => {
     if (!shiftActive) return;
@@ -62,14 +130,104 @@ export default function DashboardPage() {
     return () => clearInterval(id);
   }, [shiftActive]);
 
-  const repairsList = WORK_ORDERS.filter((wo) =>
-    activeTab === 'open' ? wo.isOpen : !wo.isOpen
-  ).filter((wo) =>
+  useEffect(() => {
+    let ignore = false;
+    const statusFilter = activeTab === 'open' ? 'Open' : 'Closed';
+
+    setRepairsLoading(true);
+    setRepairsError('');
+    getTechnicianRepairs({
+      technicianId: technician.id,
+      page: 1,
+      pageSize: 6,
+      sortBy: 'InDate',
+      sortOrder: 'desc',
+      statusFilter,
+    })
+      .then((response) => {
+        if (ignore) return;
+        const payload = response.data?.data;
+        setRepairs((payload?.items || []).map(mapFasterWebRepair));
+        setRepairCounts({
+          open: payload?.openRepairCount ?? 0,
+          closed: payload?.closedRepairCount ?? 0,
+        });
+      })
+      .catch(() => {
+        if (ignore) return;
+        setRepairs([]);
+        setRepairCounts({ open: 0, closed: 0 });
+        setRepairsError('Failed to load repairs');
+      })
+      .finally(() => {
+        if (!ignore) setRepairsLoading(false);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [activeTab, technician.id]);
+
+  const repairsList = repairs.filter((wo) =>
     !searchText || wo.title.toLowerCase().includes(searchText.toLowerCase()) ||
     wo.woNumber.includes(searchText)
   );
 
-  const partsList = PARTS_REQUESTS.filter((p) => {
+  useEffect(() => {
+    let ignore = false;
+    const isRequestActive = partsTab === 'active';
+    const statusIdMap = { Requested: 1, Issued: 2, Cancelled: 3, Delayed: 4 };
+
+    setPartsLoading(true);
+    setPartsError('');
+    getRequestedParts({
+      technicianId: technician.id,
+      isRequestActive,
+      requestedPartStatusId: statusIdMap[partsFilter],
+      pageNumber: 1,
+      pageSize: 20,
+    })
+      .then((response) => {
+        if (ignore) return;
+        const payload = response.data;
+        setParts((payload?.data || []).map(mapPartRequest));
+        setPartsCounts({
+          requested: payload?.requested ?? 0,
+          issued: payload?.issued ?? 0,
+          delayed: payload?.delayed ?? 0,
+        });
+      })
+      .catch(() => {
+        if (ignore) return;
+        setParts([]);
+        setPartsCounts({ requested: 0, issued: 0, delayed: 0 });
+        setPartsError('Failed to load parts');
+      })
+      .finally(() => {
+        if (!ignore) setPartsLoading(false);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [partsFilter, partsTab, technician.id]);
+
+  useEffect(() => {
+    let ignore = false;
+    getPartsMessages({ technicianID: technician.id, pageNumber: 1, pageSize: 20 })
+      .then((response) => {
+        if (!ignore) setPartsMessages(response.data?.data || []);
+      })
+      .catch(() => {
+        if (!ignore) setPartsMessages([]);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [technician.id]);
+
+  const partsList = parts.filter((p) => {
     const isActive = p.status === 'Requested' || p.status === 'Issued';
     if (partsTab === 'active' && !isActive) return false;
     if (partsTab === 'past' && isActive) return false;
@@ -82,6 +240,21 @@ export default function DashboardPage() {
     if (h < 12) return 'Good Morning,';
     if (h < 17) return 'Good Afternoon,';
     return 'Good Evening,';
+  };
+
+  const openRepairDetail = (repairId) => {
+    setRepairDetailLoading(true);
+    setRepairDetailError('');
+    getWorkOrderRepair(repairId)
+      .then((response) => {
+        setSelectedRepair(response.data);
+      })
+      .catch(() => {
+        setRepairDetailError('Failed to load repair detail');
+      })
+      .finally(() => {
+        setRepairDetailLoading(false);
+      });
   };
 
   return (
@@ -251,19 +424,26 @@ export default function DashboardPage() {
                         ${activeTab === t ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
                     >
                       {t.charAt(0).toUpperCase() + t.slice(1)}
+                      <span className="ml-1 text-xs opacity-70">
+                        {t === 'open' ? repairCounts.open : repairCounts.closed}
+                      </span>
                     </button>
                   ))}
                 </div>
 
-                {repairsList.length === 0 ? (
+                {repairsLoading ? (
+                  <EmptyState message="Loading repairs..." />
+                ) : repairsError ? (
+                  <EmptyState message={repairsError} />
+                ) : repairsList.length === 0 ? (
                   <EmptyState message="No work orders currently assigned" />
                 ) : viewMode === 'grid' ? (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {repairsList.map((wo) => <WorkOrderCard key={wo.id} wo={wo} />)}
+                    {repairsList.map((wo) => <WorkOrderCard key={wo.id} wo={wo} onOpen={openRepairDetail} />)}
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    {repairsList.map((wo) => <WorkOrderRow key={wo.id} wo={wo} />)}
+                    {repairsList.map((wo) => <WorkOrderRow key={wo.id} wo={wo} onOpen={openRepairDetail} />)}
                   </div>
                 )}
               </div>
@@ -275,9 +455,9 @@ export default function DashboardPage() {
                 {/* Summary cards */}
                 <div className="grid grid-cols-3 gap-3 mb-4">
                   {[
-                    { label: 'Requested Parts', count: PARTS_REQUESTS.filter(p => p.status === 'Requested').length, icon: '📋' },
-                    { label: 'Issued Parts',    count: PARTS_REQUESTS.filter(p => p.status === 'Issued').length,    icon: '✓'  },
-                    { label: 'Delayed Parts',   count: PARTS_REQUESTS.filter(p => p.status === 'Cancelled').length, icon: '⏱' },
+                    { label: 'Requested Parts', count: partsCounts.requested, icon: '📋' },
+                    { label: 'Issued Parts',    count: partsCounts.issued,    icon: '✓'  },
+                    { label: 'Delayed Parts',   count: partsCounts.delayed,   icon: '⏱' },
                   ].map(({ label, count, icon }) => (
                     <div key={label} className="bg-white border border-gray-200 rounded-xl p-4 flex items-start justify-between">
                       <div>
@@ -288,6 +468,18 @@ export default function DashboardPage() {
                     </div>
                   ))}
                 </div>
+                {partsMessages.length > 0 && (
+                  <div className="mb-4 bg-amber-50 border border-amber-200 rounded-xl p-3">
+                    <p className="text-sm font-semibold text-amber-900 mb-1">Parts Messages</p>
+                    <div className="space-y-1">
+                      {partsMessages.slice(0, 2).map((message) => (
+                        <p key={message.messageID} className="text-xs text-amber-800">
+                          {message.messageSubject}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Sub-tabs + filter */}
                 <div className="flex items-center gap-3 mb-3">
@@ -331,7 +523,11 @@ export default function DashboardPage() {
                   <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
                 </div>
 
-                {partsList.length === 0 ? (
+                {partsLoading ? (
+                  <EmptyState message="Loading parts..." />
+                ) : partsError ? (
+                  <EmptyState message={partsError} />
+                ) : partsList.length === 0 ? (
                   <EmptyState message="No parts requests found" />
                 ) : viewMode === 'grid' ? (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -355,6 +551,18 @@ export default function DashboardPage() {
           onSelect={(activity) => {
             setCurrentActivity(activity);
             setIndirectModal(false);
+          }}
+        />
+      )}
+
+      {(selectedRepair || repairDetailLoading || repairDetailError) && (
+        <RepairDetailModal
+          repair={selectedRepair}
+          loading={repairDetailLoading}
+          error={repairDetailError}
+          onClose={() => {
+            setSelectedRepair(null);
+            setRepairDetailError('');
           }}
         />
       )}
@@ -404,7 +612,7 @@ function EmptyState({ message }) {
   );
 }
 
-function WorkOrderCard({ wo }) {
+function WorkOrderCard({ wo, onOpen }) {
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md transition-shadow">
       <div className="flex items-center gap-2 mb-3">
@@ -430,14 +638,17 @@ function WorkOrderCard({ wo }) {
         <div><span className="text-gray-400">Time Standard:</span> <span className="font-medium text-gray-700">{wo.timeStandard}</span></div>
         <div><span className="text-gray-400">Date In:</span> <span className="font-medium text-gray-700">{wo.dateIn}</span></div>
       </div>
-      <button className="mt-3 w-full py-2 bg-gray-50 hover:bg-blue-50 hover:text-blue-700 border border-gray-200 hover:border-blue-300 rounded-lg text-sm font-medium text-gray-600 transition-colors">
+      <button
+        onClick={() => onOpen?.(wo.repairId)}
+        className="mt-3 w-full py-2 bg-gray-50 hover:bg-blue-50 hover:text-blue-700 border border-gray-200 hover:border-blue-300 rounded-lg text-sm font-medium text-gray-600 transition-colors"
+      >
         Resume
       </button>
     </div>
   );
 }
 
-function WorkOrderRow({ wo }) {
+function WorkOrderRow({ wo, onOpen }) {
   return (
     <div className="bg-white border border-gray-200 rounded-xl px-4 py-3 flex items-center gap-4 hover:shadow-sm transition-shadow">
       <div className="flex items-center gap-2 shrink-0">
@@ -448,9 +659,63 @@ function WorkOrderRow({ wo }) {
         <p className="text-xs text-gray-400">WO #{wo.woNumber} · {wo.asset} {wo.assetId}</p>
       </div>
       <div className="text-xs text-gray-500 shrink-0">{wo.dateIn}</div>
-      <button className="px-4 py-1.5 bg-gray-50 hover:bg-blue-50 hover:text-blue-700 border border-gray-200 hover:border-blue-300 rounded-lg text-xs font-medium text-gray-600 transition-colors shrink-0">
+      <button
+        onClick={() => onOpen?.(wo.repairId)}
+        className="px-4 py-1.5 bg-gray-50 hover:bg-blue-50 hover:text-blue-700 border border-gray-200 hover:border-blue-300 rounded-lg text-xs font-medium text-gray-600 transition-colors shrink-0"
+      >
         Resume
       </button>
+    </div>
+  );
+}
+
+function RepairDetailModal({ repair, loading, error, onClose }) {
+  const title = repair
+    ? [repair.actionDesc, repair.groupDesc, repair.componentDesc].filter(Boolean).join(' ')
+    : 'Repair Detail';
+
+  return (
+    <div className="fixed inset-0 z-40 bg-black/30 flex items-center justify-center p-4">
+      <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+          <div>
+            <p className="text-xs text-gray-400">Repair Detail</p>
+            <h2 className="font-bold text-gray-900">{loading ? 'Loading...' : title}</h2>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="p-5">
+          {loading && <p className="text-sm text-gray-500">Loading repair detail...</p>}
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          {repair && !loading && !error && (
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <Detail label="Repair ID" value={repair.repairId} />
+              <Detail label="WO Status" value={`${repair.workOrderStatusCode} - ${repair.workOrderStatusDesc}`} />
+              <Detail label="Asset" value={`${repair.yearMake || ''} ${repair.model || ''}`.trim()} />
+              <Detail label="Asset Number" value={repair.assetNumber} />
+              <Detail label="Priority" value={`${repair.priority} - ${repair.priorityDesc}`} />
+              <Detail label="Status" value={repair.status} />
+              <Detail label="Technician" value={repair.technicianName} />
+              <Detail label="Shop" value={`${repair.maintShop || ''} ${repair.maintShopDesc || ''}`.trim()} />
+              <Detail label="Repair Reason" value={repair.repairReasonDesc || '--'} />
+              <Detail label="Time Standard" value={repair.timeStandardHours == null ? '--' : `${repair.timeStandardHours}h`} />
+              <Detail label="Estimated Hours" value={repair.estimatedHours ?? '--'} />
+              <Detail label="Serial Number" value={repair.serialNumber} />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Detail({ label, value }) {
+  return (
+    <div>
+      <p className="text-xs text-gray-400">{label}</p>
+      <p className="font-medium text-gray-800">{value || '--'}</p>
     </div>
   );
 }

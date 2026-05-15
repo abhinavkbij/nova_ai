@@ -8,6 +8,7 @@ class IndirectActivity(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     category = Column(String, nullable=True)
+    repair_group_component_action_id = Column(Integer, nullable=True, unique=True)
 
 
 class WorkOrderStatus(Base):

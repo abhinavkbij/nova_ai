@@ -1,29 +1,48 @@
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.work_order import Task
-from app.schemas.work_order import TaskOut, TaskUpdateIn
+from app.schemas.work_order import TaskListResponse, TaskStepOut, TaskUpdateIn
 
-router = APIRouter(prefix="/task", tags=["tasks"])
+router = APIRouter(tags=["tasks"])
 
 
-@router.get("/{task_id}", response_model=TaskOut)
-def get_task(task_id: int, db: Session = Depends(get_db)):
-    task = db.query(Task).filter(Task.id == task_id).first()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return TaskOut(
-        id=task.id,
-        repairId=task.repair_id,
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _task_to_step(task: Task) -> TaskStepOut:
+    return TaskStepOut(
         stepNumber=task.step_number,
-        resultId=task.result_id,
-        comment=task.comment,
-        title=task.title,
+        taskName=task.task_name,
+        resultName=task.result_name,
+        comment=task.comment or "",
+        instruction=task.instruction,
+        repairTaskID=task.id,
+        hasInstruction=bool(task.has_instruction),
     )
 
 
-@router.put("/{task_id}", response_model=TaskOut)
+@router.get("/tasks/{repair_id}", response_model=TaskListResponse)
+def get_tasks_for_repair(repair_id: int, db: Session = Depends(get_db)):
+    tasks = (
+        db.query(Task)
+        .filter(Task.repair_id == repair_id)
+        .order_by(Task.step_number)
+        .all()
+    )
+    return TaskListResponse(
+        success=True,
+        data=[_task_to_step(t) for t in tasks],
+        message=None,
+        errors=None,
+        timestamp=_now_iso(),
+    )
+
+
+@router.put("/task/{task_id}", response_model=TaskListResponse)
 def update_task(task_id: int, payload: TaskUpdateIn, db: Session = Depends(get_db)):
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
@@ -36,11 +55,10 @@ def update_task(task_id: int, payload: TaskUpdateIn, db: Session = Depends(get_d
         task.comment = payload.comment
     db.commit()
     db.refresh(task)
-    return TaskOut(
-        id=task.id,
-        repairId=task.repair_id,
-        stepNumber=task.step_number,
-        resultId=task.result_id,
-        comment=task.comment,
-        title=task.title,
+    return TaskListResponse(
+        success=True,
+        data=[_task_to_step(task)],
+        message=None,
+        errors=None,
+        timestamp=_now_iso(),
     )

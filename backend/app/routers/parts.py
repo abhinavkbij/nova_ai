@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from typing import Optional, List
 import math
+from datetime import datetime, timezone
 
 from app.database import get_db
 from app.models.part import Part
@@ -29,6 +30,72 @@ def _part_to_out(p: Part) -> PartOut:
         requestComment=p.request_comment,
         createdAt=p.created_at,
     )
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _pagination(page: int, page_size: int, total: int) -> dict:
+    total_pages = max(1, math.ceil(total / page_size))
+    return {
+        "currentPage": page,
+        "pageSize": page_size,
+        "totalItems": total,
+        "totalPages": total_pages,
+        "hasNextPage": page < total_pages,
+        "hasPreviousPage": page > 1,
+    }
+
+
+def _name_parts(full_name: str | None) -> tuple[str, None, str]:
+    parts = (full_name or "").split()
+    if not parts:
+        return "", None, ""
+    if len(parts) == 1:
+        return parts[0], None, ""
+    return parts[0], None, parts[-1]
+
+
+def _part_to_message(p: Part) -> dict:
+    technician = p.repair.technician if p.repair and p.repair.technician else None
+    first_name, middle_initial, last_name = _name_parts(technician.name if technician else "")
+    part_code = p.part_name or f"Part {p.part_id or p.id}"
+    store_room = p.store_room or "MAIN PARTS STOREROOM"
+    document_id = p.wo_number or (p.repair.wo_number if p.repair else "")
+    asset_number = p.repair.wo_number if p.repair else ""
+
+    return {
+        "messageID": p.id,
+        "messageType": 1,
+        "referenceID": p.part_id or p.id,
+        "technicianID": p.technician_id,
+        "messageBody": f"Your item {part_code} is available. You can collect {p.issued_qty or p.requested_qty or 1:03d} from {store_room}",
+        "messageSubject": f"Please collect your item {part_code}",
+        "isRead": False,
+        "createdDate": p.created_at,
+        "createdUserID": p.created_user_id,
+        "modifiedDate": p.created_at,
+        "modifiedUserID": p.created_user_id,
+        "firstName": first_name,
+        "middleInitial": middle_initial,
+        "lastName": last_name,
+        "documentID": document_id,
+        "assetNumber": asset_number,
+        "notificationCount": 1,
+        "repairID": p.repair_id,
+        "fullName": technician.name if technician else "",
+    }
+
+
+def _fasterweb_message_envelope(data: list[dict], page: int, page_size: int, total: int) -> dict:
+    return {
+        "success": True,
+        "data": data,
+        "message": None,
+        "pagination": _pagination(page, page_size, total),
+        "timestamp": _utc_timestamp(),
+    }
 
 
 @router.get("/parts/repair/{repair_id}", response_model=PaginatedParts)
@@ -84,6 +151,31 @@ def get_requested_parts(
         requested=requested,
         issued=issued,
         delayed=delayed,
+    )
+
+
+@router.get("/parts/messages")
+def get_parts_messages(
+    technicianID: int = Query(...),
+    pageNumber: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    query = (
+        db.query(Part)
+        .filter(
+            Part.technician_id == technicianID,
+            Part.request_part_status_id == 2,
+        )
+        .order_by(Part.created_at.desc(), Part.id.desc())
+    )
+    total = query.count()
+    messages = query.offset((pageNumber - 1) * pageSize).limit(pageSize).all()
+    return _fasterweb_message_envelope(
+        [_part_to_message(p) for p in messages],
+        pageNumber,
+        pageSize,
+        total,
     )
 
 

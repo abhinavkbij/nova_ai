@@ -34,15 +34,24 @@ class PaginatedWorkOrders(BaseModel):
     totalPages: int
 
 
-class TaskOut(BaseModel):
-    id: int
-    repairId: Optional[int] = None
+class TaskStepOut(BaseModel):
     stepNumber: Optional[int] = None
-    resultId: Optional[int] = None
+    taskName: Optional[str] = None
+    resultName: Optional[str] = None
     comment: Optional[str] = None
-    title: Optional[str] = None
+    instruction: Optional[str] = None
+    repairTaskID: int
+    hasInstruction: bool = False
 
     model_config = {"from_attributes": True}
+
+
+class TaskListResponse(BaseModel):
+    success: bool
+    data: List[TaskStepOut]
+    message: Optional[str] = None
+    errors: Optional[str] = None
+    timestamp: str
 
 
 class TaskUpdateIn(BaseModel):
