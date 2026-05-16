@@ -6,12 +6,15 @@ import {
 } from 'lucide-react';
 import { getTechniciansPage, getShops } from '../api/technicians';
 import PinModal from '../components/PinModal';
+import { useNova } from '../context/NovaContext';
 
 const GRID_PER_PAGE = 12;
 const LIST_ROWS_OPTIONS = [10, 25, 50];
 
 export default function ShopHomePage() {
   const navigate = useNavigate();
+  const { updateContext } = useNova();
+  useEffect(() => { updateContext({ screen: 'home', repairId: null, woNumber: null, repairTitle: null }); }, []); // eslint-disable-line
   const [search, setSearch]                 = useState('');
   const [searchInput, setSearchInput]       = useState('');
   const [selectedShop, setSelectedShop]     = useState('all');

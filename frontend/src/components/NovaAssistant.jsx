@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { X, Wrench, ClipboardList } from 'lucide-react';
 
-// Audio worklet code for capturing PCM at 16 kHz from the microphone
+// PCM capture at 16 kHz for the Gemini live session
 const WORKLET_CODE = `
 class PCMCaptureProcessor extends AudioWorkletProcessor {
   process(inputs) {
@@ -19,12 +19,12 @@ class PCMCaptureProcessor extends AudioWorkletProcessor {
 registerProcessor('pcm-capture', PCMCaptureProcessor);
 `;
 
+const WAKE_REGEX = /\b(hey\s+nova|hi\s+nova|okay?\s+nova|nova)\b/i;
+
 function arrayBufferToBase64(buffer) {
   const bytes = new Uint8Array(buffer);
   let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
   return btoa(binary);
 }
 
@@ -52,7 +52,6 @@ function formatTime(date) {
   return new Date(date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 }
 
-// Waveform bars shown when recording
 const WAVEFORM_HEIGHTS = [12, 20, 28, 18, 30, 22, 14, 26, 32, 20, 16, 28, 24, 18, 30, 26, 14, 22, 30, 18, 28, 16, 24, 32, 20, 14, 26, 22, 18, 12];
 
 function AudioWaveform() {
@@ -69,7 +68,15 @@ function AudioWaveform() {
   );
 }
 
-export default function NovaAssistant({ technician, onAction }) {
+function getTechnicianFromStorage() {
+  try {
+    const saved = sessionStorage.getItem('loggedInTechnician');
+    return saved ? JSON.parse(saved) : null;
+  } catch { return null; }
+}
+
+// screenContext shape: { screen, technicianId, shopId, repairId, woNumber, repairTitle, repairStatus, priority }
+export default function NovaAssistant({ screenContext = {}, onAction }) {
   const [isOpen, setIsOpen]           = useState(false);
   const [messages, setMessages]       = useState([]);
   const [status, setStatus]           = useState('connecting');
@@ -86,8 +93,12 @@ export default function NovaAssistant({ technician, onAction }) {
   const inputRef           = useRef(null);
   const onActionRef        = useRef(onAction);
   const messageIdRef       = useRef(0);
-  const speechRecognitionRef = useRef(null);
+  const wakeWordRef        = useRef(null);
+  const connectRef         = useRef(null);
+  const isOpenRef          = useRef(isOpen);
+
   useEffect(() => { onActionRef.current = onAction; }, [onAction]);
+  useEffect(() => { isOpenRef.current = isOpen; }, [isOpen]);
 
   const nextMessageId = useCallback(() => {
     messageIdRef.current += 1;
@@ -138,49 +149,13 @@ export default function NovaAssistant({ technician, onAction }) {
     }
   }, [getAudioCtx]);
 
-  const connectRef = useRef(null);
-
-  const appendUserTranscript = useCallback((text) => {
-    appendStreamingMessage('user', text, mergeTranscriptText);
-  }, [appendStreamingMessage]);
-
-  const startLocalSpeechTranscript = useCallback(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-    recognition.onresult = (event) => {
-      let transcript = '';
-      for (let i = 0; i < event.results.length; i += 1) {
-        transcript += event.results[i][0]?.transcript ?? '';
-      }
-      appendUserTranscript(transcript);
-    };
-    recognition.onerror = () => {};
-    recognition.onend = () => {
-      if (speechRecognitionRef.current === recognition) speechRecognitionRef.current = null;
-    };
-    try {
-      recognition.start();
-      speechRecognitionRef.current = recognition;
-    } catch {
-      speechRecognitionRef.current = null;
-    }
-  }, [appendUserTranscript]);
-
-  const stopLocalSpeechTranscript = useCallback(() => {
-    const recognition = speechRecognitionRef.current;
-    if (!recognition) return;
-    speechRecognitionRef.current = null;
-    try { recognition.stop(); } catch { /* ignore */ }
-  }, []);
+  // ── WebSocket connection ───────────────────────────────────────────────────
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    const tech = getTechnicianFromStorage();
+    const techId = tech?.id ?? '';
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const techId = technician?.id ?? '';
     const url = `${proto}//${window.location.host}/api/nova/ws?technicianId=${techId}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
@@ -232,7 +207,7 @@ export default function NovaAssistant({ technician, onAction }) {
     };
 
     ws.onerror = () => { setStatus('error'); };
-  }, [appendStreamingMessage, nextMessageId, playAudioChunk, settleStreamingMessages, technician?.id]);
+  }, [appendStreamingMessage, nextMessageId, playAudioChunk, settleStreamingMessages]);
 
   useEffect(() => {
     connectRef.current = connect;
@@ -240,9 +215,108 @@ export default function NovaAssistant({ technician, onAction }) {
     return () => { wsRef.current?.close(); };
   }, [connect]);
 
+  // ── Send screen context to backend whenever it changes ────────────────────
+
+  useEffect(() => {
+    if (!connected || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const tech = getTechnicianFromStorage();
+    const payload = {
+      type: 'context_update',
+      ...screenContext,
+      technicianId: tech?.id,
+      technicianName: tech?.name,
+      shopId: tech?.shopId,
+      shopName: tech?.shop,
+      role: tech?.role,
+    };
+    wsRef.current.send(JSON.stringify(payload));
+  }, [connected, screenContext]);
+
+  // ── Scroll to bottom ──────────────────────────────────────────────────────
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isRecording]);
+
+  // ── Wake-word detection (always-on, even when panel is closed) ────────────
+
+  const startRecordingRef = useRef(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      // Stop wake-word listener while panel is open (user is interacting directly)
+      wakeWordRef.current?.stop();
+      wakeWordRef.current = null;
+      return;
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = (event) => {
+      let transcript = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        transcript += event.results[i][0]?.transcript ?? '';
+      }
+
+      const match = WAKE_REGEX.exec(transcript);
+      if (!match) return;
+
+      // Strip the wake word and anything before it; take command remainder
+      const command = transcript.slice(match.index + match[0].length).trim();
+
+      recognition.stop();
+      wakeWordRef.current = null;
+      setIsOpen(true);
+
+      if (command && wsRef.current?.readyState === WebSocket.OPEN) {
+        // Small delay so the panel animates open before we fire the command
+        setTimeout(() => {
+          wsRef.current.send(JSON.stringify({ type: 'text', content: command }));
+          setMessages((prev) => [...prev, {
+            id: `${Date.now()}-wake`,
+            role: 'user',
+            text: command,
+            ts: new Date(),
+          }]);
+          setStatus('thinking');
+        }, 300);
+      } else {
+        // Wake word with no inline command — auto-start recording
+        setTimeout(() => { startRecordingRef.current?.(); }, 300);
+      }
+    };
+
+    recognition.onend = () => {
+      // Auto-restart unless we intentionally stopped it
+      if (wakeWordRef.current === recognition && !isOpenRef.current) {
+        try { recognition.start(); } catch { wakeWordRef.current = null; }
+      }
+    };
+
+    recognition.onerror = () => {
+      if (wakeWordRef.current === recognition) wakeWordRef.current = null;
+    };
+
+    try {
+      recognition.start();
+      wakeWordRef.current = recognition;
+    } catch {
+      wakeWordRef.current = null;
+    }
+
+    return () => {
+      wakeWordRef.current = null;
+      try { recognition.stop(); } catch { /* ignore */ }
+    };
+  }, [isOpen]);
+
+  // ── Recording ─────────────────────────────────────────────────────────────
 
   async function startRecording() {
     if (isRecording) return;
@@ -251,7 +325,6 @@ export default function NovaAssistant({ technician, onAction }) {
       streamRef.current = stream;
       if (wsRef.current?.readyState === WebSocket.OPEN)
         wsRef.current.send(JSON.stringify({ type: 'audio_start' }));
-      startLocalSpeechTranscript();
       const ctx = new AudioContext({ sampleRate: 16000 });
       const blobUrl = URL.createObjectURL(new Blob([WORKLET_CODE], { type: 'application/javascript' }));
       await ctx.audioWorklet.addModule(blobUrl);
@@ -267,11 +340,12 @@ export default function NovaAssistant({ technician, onAction }) {
       setIsRecording(true);
       setStatus('listening');
     } catch (err) {
-      stopLocalSpeechTranscript();
       console.error('[Nova] mic error', err);
       setStatus('error');
     }
   }
+
+  useEffect(() => { startRecordingRef.current = startRecording; });
 
   function stopRecording() {
     if (!isRecording) return;
@@ -284,7 +358,6 @@ export default function NovaAssistant({ technician, onAction }) {
     }
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
-    stopLocalSpeechTranscript();
     setIsRecording(false);
     setStatus('thinking');
     if (wsRef.current?.readyState === WebSocket.OPEN)
@@ -312,7 +385,7 @@ export default function NovaAssistant({ technician, onAction }) {
 
   return (
     <>
-      {/* Floating trigger button */}
+      {/* Floating trigger */}
       <button
         onClick={() => setIsOpen((o) => !o)}
         aria-label="Open Nova assistant"
@@ -326,7 +399,6 @@ export default function NovaAssistant({ technician, onAction }) {
         <div className="fixed bottom-24 right-6 z-50 w-[480px] max-h-[700px] flex flex-col rounded-2xl shadow-2xl bg-white overflow-hidden">
 
           {!hasMessages ? (
-            /* ── Empty / Welcome state ── */
             <>
               <button
                 onClick={() => setIsOpen(false)}
@@ -337,27 +409,25 @@ export default function NovaAssistant({ technician, onAction }) {
               </button>
 
               <div className="flex flex-col items-center px-8 pt-14 pb-6 flex-1 overflow-y-auto">
-                {/* Large bot icon */}
                 <div className="w-24 h-24 rounded-2xl bg-blue-50 flex items-center justify-center mb-5">
                   <NovaIcon className="w-12 h-12 text-blue-600" />
                 </div>
-                <h2 className="text-xl font-bold text-gray-900 mb-2 text-center">Hi, Im Nova, your AI assistant</h2>
+                <h2 className="text-xl font-bold text-gray-900 mb-2 text-center">Hi, I&apos;m Nova, your AI assistant</h2>
                 <p className="text-sm text-gray-500 text-center mb-8 leading-relaxed">
-                  I can help you answer repair/work order questions, take notes,<br />and more. How can I assist you today?
+                  I can help you manage repairs, take notes,<br />request parts, and control your shift.
                 </p>
 
-                {/* Suggestion cards */}
                 <div className="w-full space-y-3">
                   <button
-                    onClick={() => handleSuggestion("What's the torque specifications for the wheel lug nuts?")}
+                    onClick={() => handleSuggestion("Show me my open repairs")}
                     className="w-full flex items-center gap-3 p-4 border border-gray-200 rounded-xl text-left hover:bg-gray-50 transition-colors"
                   >
                     <div className="w-9 h-9 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
                       <Wrench className="w-4 h-4 text-amber-600" />
                     </div>
                     <div>
-                      <p className="font-semibold text-gray-900 text-sm">Repair Help</p>
-                      <p className="text-xs text-gray-500">&ldquo;What&apos;s the torque specifications for the wheel lug nuts?&rdquo;</p>
+                      <p className="font-semibold text-gray-900 text-sm">View Repairs</p>
+                      <p className="text-xs text-gray-500">&ldquo;Show me my open repairs&rdquo;</p>
                     </div>
                   </button>
 
@@ -370,7 +440,7 @@ export default function NovaAssistant({ technician, onAction }) {
                     </div>
                     <div>
                       <p className="font-semibold text-gray-900 text-sm">Take Notes</p>
-                      <p className="text-xs text-gray-500">&ldquo;Add a note: Customer reported grinding noise from the engine&rdquo;</p>
+                      <p className="text-xs text-gray-500">&ldquo;Add a note: Customer reported grinding noise&rdquo;</p>
                     </div>
                   </button>
                 </div>
@@ -388,14 +458,17 @@ export default function NovaAssistant({ technician, onAction }) {
               />
             </>
           ) : (
-            /* ── Chat view ── */
             <>
-              {/* Header */}
               <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-200 shrink-0 bg-white">
                 <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center">
                   <NovaIcon className="w-5 h-5 text-blue-600" />
                 </div>
                 <span className="font-semibold text-gray-900 text-base">Nova AI</span>
+                {screenContext?.screen && screenContext.screen !== 'home' && (
+                  <span className="ml-1 text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full capitalize">
+                    {screenContext.screen.replace('_', ' ')}
+                  </span>
+                )}
                 <button
                   onClick={() => setIsOpen(false)}
                   className="ml-auto text-gray-400 hover:text-gray-600 transition-colors"
@@ -405,13 +478,11 @@ export default function NovaAssistant({ technician, onAction }) {
                 </button>
               </div>
 
-              {/* Messages */}
               <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-white">
                 {messages.map((msg) => (
                   <MessageBubble key={msg.id} msg={msg} />
                 ))}
 
-                {/* Waveform while recording */}
                 {isRecording && (
                   <div className="flex justify-end">
                     <div className="bg-blue-500 rounded-2xl rounded-tr-sm px-4 py-3">
@@ -420,17 +491,15 @@ export default function NovaAssistant({ technician, onAction }) {
                   </div>
                 )}
 
-                {/* Nova is listening */}
                 {isRecording && (
                   <div className="flex items-center gap-2">
                     <div className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center shrink-0">
                       <NovaIcon className="w-4 h-4 text-blue-600" />
                     </div>
-                    <span className="text-sm text-gray-500">Nova is listening..</span>
+                    <span className="text-sm text-gray-500">Nova is listening...</span>
                   </div>
                 )}
 
-                {/* Thinking indicator */}
                 {status === 'thinking' && !isRecording && (
                   <div className="flex gap-3 items-end">
                     <div className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center shrink-0">
@@ -471,7 +540,6 @@ function InputBar({ textInput, setTextInput, connected, isRecording, onStartReco
   return (
     <div className="border-t border-gray-200 bg-white px-4 pt-3 pb-4 shrink-0">
       <form onSubmit={onSend} className="flex items-center gap-2">
-        {/* Mic button */}
         <button
           type="button"
           onPointerDown={onStartRecording}
@@ -510,7 +578,7 @@ function InputBar({ textInput, setTextInput, connected, isRecording, onStartReco
         </button>
       </form>
       <p className="text-center text-xs text-gray-400 mt-1">
-        Say &quot;Hey Nova&quot; to activate voice commands
+        Say &ldquo;Hey Nova&rdquo; or &ldquo;Nova&rdquo; to activate from any screen
       </p>
     </div>
   );
@@ -534,14 +602,11 @@ function MessageBubble({ msg }) {
         <div className="max-w-[75%] bg-blue-500 text-white rounded-2xl rounded-tr-sm px-4 py-3 text-sm leading-relaxed">
           {msg.text}
         </div>
-        {msg.ts && (
-          <span className="text-xs text-gray-400 mr-1">{formatTime(msg.ts)}</span>
-        )}
+        {msg.ts && <span className="text-xs text-gray-400 mr-1">{formatTime(msg.ts)}</span>}
       </div>
     );
   }
 
-  // Assistant message
   return (
     <div className="flex gap-3 items-end">
       <div className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center shrink-0">
@@ -551,9 +616,7 @@ function MessageBubble({ msg }) {
         <div className="bg-white border border-gray-200 rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed text-gray-800">
           {msg.text}
         </div>
-        {msg.ts && (
-          <span className="text-xs text-gray-400 mt-1 ml-1 block">{formatTime(msg.ts)}</span>
-        )}
+        {msg.ts && <span className="text-xs text-gray-400 mt-1 ml-1 block">{formatTime(msg.ts)}</span>}
       </div>
     </div>
   );

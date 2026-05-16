@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useNova } from '../context/NovaContext';
 import {
   Check, ChevronDown, Search, LayoutGrid, List, Plus, Info,
   Calendar, AlertCircle, Car,
@@ -105,6 +106,8 @@ function FormField({ label, required, children, className = '' }) {
 export default function CreateWorkOrderPage() {
   const navigate = useNavigate();
   const technician = JSON.parse(sessionStorage.getItem('loggedInTechnician') || '{}');
+  const { updateContext } = useNova();
+  useEffect(() => { updateContext({ screen: 'create_work_order', repairId: null, woNumber: null }); }, []); // eslint-disable-line
 
   const [step, setStep] = useState(1);
 

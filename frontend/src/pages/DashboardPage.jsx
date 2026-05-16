@@ -10,7 +10,7 @@ import { searchRepairs } from '../api/workOrders';
 import { getPartsMessages, getRequestedParts } from '../api/parts';
 import { getStatusIndicator, submitIndirectActivity, beginShift, endShift } from '../api/technicians';
 import IndirectActivityModal from '../components/IndirectActivityModal';
-import NovaAssistant from '../components/NovaAssistant';
+import { useNova } from '../context/NovaContext';
 
 function formatDuration(ms) {
   const totalSeconds = Math.floor(ms / 1000);
@@ -102,6 +102,8 @@ export default function DashboardPage() {
   useEffect(() => { if (!technician) navigate('/'); }, []); // eslint-disable-line
   if (!technician) return null;
 
+  const { updateContext, registerActionHandler } = useNova();
+
   const [activeSection, setActiveSection]       = useState('repairs');
   const [activeTab, setActiveTab]               = useState('all');
   const [repairsViewMode, setRepairsViewMode]   = useState('grid');
@@ -143,6 +145,43 @@ export default function DashboardPage() {
     const id = setInterval(() => setShiftDuration(Date.now() - new Date(shiftStartedAt).getTime()), 1000);
     return () => clearInterval(id);
   }, [shiftActive, shiftStartedAt]);
+
+  // Push current screen context to Nova
+  useEffect(() => {
+    updateContext({
+      screen: activeSection === 'repairs' ? 'repairs' : activeSection === 'parts' ? 'parts' : 'dashboard',
+      technicianId: technician.id,
+      technicianName: technician.name,
+      shopId: technician.shopId,
+      shopName: technician.shop,
+      role: technician.role,
+      shiftActive,
+    });
+  }, [activeSection, technician.id, shiftActive]); // eslint-disable-line
+
+  // Register action handler so Nova can mutate dashboard state
+  useEffect(() => {
+    return registerActionHandler((action) => {
+      if (action.action === 'navigate') setActiveSection(action.section);
+      if (action.action === 'begin_shift') {
+        beginShift(technician.id, technician.shopId)
+          .then((response) => {
+            const data = response.data;
+            setShiftActive(true);
+            const startTime = data.beginTime ?? new Date().toISOString();
+            setShiftStartedAt(startTime);
+            setShiftDuration(Date.now() - new Date(startTime).getTime());
+          })
+          .catch(() => {});
+      }
+      if (action.action === 'end_shift') {
+        endShift(technician.id)
+          .then(() => { setShiftActive(false); setShiftStartedAt(null); setShiftDuration(0); })
+          .catch(() => {});
+      }
+      if (action.action === 'set_indirect_activity') setCurrentActivity(action.activity);
+    });
+  }, [registerActionHandler, technician.id, technician.shopId]); // eslint-disable-line
 
   useEffect(() => {
     getStatusIndicator(technician.id)
@@ -762,25 +801,6 @@ export default function DashboardPage() {
         />
       )}
 
-      <NovaAssistant
-        technician={technician}
-        onAction={(action) => {
-          if (action.action === 'navigate') setActiveSection(action.section);
-          if (action.action === 'begin_shift') {
-            beginShift(technician.id, technician.shopId)
-              .then((response) => {
-                const data = response.data;
-                setShiftActive(true);
-                const startTime = data.beginTime ?? new Date().toISOString();
-                setShiftStartedAt(startTime);
-                setShiftDuration(Date.now() - new Date(startTime).getTime());
-              })
-              .catch(() => {});
-          }
-          if (action.action === 'end_shift') endShift(technician.id).catch(() => {});
-          if (action.action === 'set_indirect_activity') setCurrentActivity(action.activity);
-        }}
-      />
     </div>
   );
 }
