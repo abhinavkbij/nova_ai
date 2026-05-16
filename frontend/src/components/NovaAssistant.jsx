@@ -19,7 +19,6 @@ class PCMCaptureProcessor extends AudioWorkletProcessor {
 registerProcessor('pcm-capture', PCMCaptureProcessor);
 `;
 
-const WAKE_REGEX = /\b(hey\s+nova|hi\s+nova|okay?\s+nova|nova)\b/i;
 
 function arrayBufferToBase64(buffer) {
   const bytes = new Uint8Array(buffer);
@@ -93,12 +92,9 @@ export default function NovaAssistant({ screenContext = {}, onAction }) {
   const inputRef           = useRef(null);
   const onActionRef        = useRef(onAction);
   const messageIdRef       = useRef(0);
-  const wakeWordRef        = useRef(null);
   const connectRef         = useRef(null);
-  const isOpenRef          = useRef(isOpen);
 
   useEffect(() => { onActionRef.current = onAction; }, [onAction]);
-  useEffect(() => { isOpenRef.current = isOpen; }, [isOpen]);
 
   const nextMessageId = useCallback(() => {
     messageIdRef.current += 1;
@@ -238,84 +234,6 @@ export default function NovaAssistant({ screenContext = {}, onAction }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isRecording]);
 
-  // ── Wake-word detection (always-on, even when panel is closed) ────────────
-
-  const startRecordingRef = useRef(null);
-
-  useEffect(() => {
-    if (isOpen) {
-      // Stop wake-word listener while panel is open (user is interacting directly)
-      wakeWordRef.current?.stop();
-      wakeWordRef.current = null;
-      return;
-    }
-
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-
-    recognition.onresult = (event) => {
-      let transcript = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        transcript += event.results[i][0]?.transcript ?? '';
-      }
-
-      const match = WAKE_REGEX.exec(transcript);
-      if (!match) return;
-
-      // Strip the wake word and anything before it; take command remainder
-      const command = transcript.slice(match.index + match[0].length).trim();
-
-      recognition.stop();
-      wakeWordRef.current = null;
-      setIsOpen(true);
-
-      if (command && wsRef.current?.readyState === WebSocket.OPEN) {
-        // Small delay so the panel animates open before we fire the command
-        setTimeout(() => {
-          wsRef.current.send(JSON.stringify({ type: 'text', content: command }));
-          setMessages((prev) => [...prev, {
-            id: `${Date.now()}-wake`,
-            role: 'user',
-            text: command,
-            ts: new Date(),
-          }]);
-          setStatus('thinking');
-        }, 300);
-      } else {
-        // Wake word with no inline command — auto-start recording
-        setTimeout(() => { startRecordingRef.current?.(); }, 300);
-      }
-    };
-
-    recognition.onend = () => {
-      // Auto-restart unless we intentionally stopped it
-      if (wakeWordRef.current === recognition && !isOpenRef.current) {
-        try { recognition.start(); } catch { wakeWordRef.current = null; }
-      }
-    };
-
-    recognition.onerror = () => {
-      if (wakeWordRef.current === recognition) wakeWordRef.current = null;
-    };
-
-    try {
-      recognition.start();
-      wakeWordRef.current = recognition;
-    } catch {
-      wakeWordRef.current = null;
-    }
-
-    return () => {
-      wakeWordRef.current = null;
-      try { recognition.stop(); } catch { /* ignore */ }
-    };
-  }, [isOpen]);
-
   // ── Recording ─────────────────────────────────────────────────────────────
 
   async function startRecording() {
@@ -344,8 +262,6 @@ export default function NovaAssistant({ screenContext = {}, onAction }) {
       setStatus('error');
     }
   }
-
-  useEffect(() => { startRecordingRef.current = startRecording; });
 
   function stopRecording() {
     if (!isRecording) return;
@@ -578,7 +494,7 @@ function InputBar({ textInput, setTextInput, connected, isRecording, onStartReco
         </button>
       </form>
       <p className="text-center text-xs text-gray-400 mt-1">
-        Say &ldquo;Hey Nova&rdquo; or &ldquo;Nova&rdquo; to activate from any screen
+        Hold mic to speak &bull; Type to chat
       </p>
     </div>
   );
