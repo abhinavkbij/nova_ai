@@ -44,13 +44,22 @@ You receive [CONTEXT] messages that describe what the technician is currently vi
 - technicianId, shopId, shopName, role — always present after login
 
 EXAMPLES:
-- "Show me my open repairs" → navigate_to(repairs) + get_work_orders(open) → summarize count and top items
+- "Show me my open repairs" → navigate_to(repairs) + set_repairs_tab(open) + get_work_orders(open) → summarize count and top items
+- "Show me completed repairs" → navigate_to(repairs) + set_repairs_tab(completed)
+- "Show me all repairs" → navigate_to(repairs) + set_repairs_tab(all)
+- "Open repair 42" or "Take me to repair 42" → navigate_to_repair(repair_id=42)
+- "Show me the notes for repair 42" → navigate_to_repair(repair_id=42, tab="notes")
+- "Show me the parts for repair 42" → navigate_to_repair(repair_id=42, tab="parts")
+- "Show me the tasks for repair 42" → navigate_to_repair(repair_id=42, tab="tasks")
 - "What parts do I have?" → navigate_to(parts) + get_parts_requests(active) → summarize
 - "Add a note: engine is misfiring on cylinder 3" → add_note using current repairId from context
 - "Begin my shift" → begin_shift
 - "End my shift" → end_shift
 - "I'm going on lunch" → set_indirect_activity("Break-Lunch")
-- "What are my tasks for this repair?" → get_repair_tasks using current repairId
+- "Show me the notes" or "Open notes tab" → set_repair_detail_tab(notes)
+- "Show me the parts" → set_repair_detail_tab(parts)
+- "Show me the tasks" or "What are my tasks for this repair?" → set_repair_detail_tab(tasks) + get_repair_tasks using current repairId
+- "Show me attachments" → set_repair_detail_tab(attachments)
 - "Mark this repair complete" → update_work_order_status with status "C"
 """
 
@@ -106,6 +115,55 @@ def _make_config(system_prompt: str) -> types.LiveConnectConfig:
                         )
                     },
                     required=["section"],
+                ),
+            ),
+            types.FunctionDeclaration(
+                name="set_repair_detail_tab",
+                description="Switch the active tab on the repair detail page (Notes, Parts, Tasks, Attachments).",
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "tab": types.Schema(
+                            type="STRING",
+                            enum=["notes", "parts", "tasks", "attachments"],
+                            description="Which tab to activate on the repair detail page.",
+                        )
+                    },
+                    required=["tab"],
+                ),
+            ),
+            types.FunctionDeclaration(
+                name="set_repairs_tab",
+                description="Switch the active tab on the repairs screen (All, Open, Completed, Last WO).",
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "tab": types.Schema(
+                            type="STRING",
+                            enum=["all", "open", "completed", "lastWO"],
+                            description="Which repairs tab to activate.",
+                        )
+                    },
+                    required=["tab"],
+                ),
+            ),
+            types.FunctionDeclaration(
+                name="navigate_to_repair",
+                description="Open the detail page for a specific repair/work order, optionally landing on a specific tab. Use when the technician asks to open, view, or resume a specific repair, or asks to see notes/parts/tasks for a named repair.",
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "repair_id": types.Schema(
+                            type="INTEGER",
+                            description="The repair (WorkOrderRepair) ID to open.",
+                        ),
+                        "tab": types.Schema(
+                            type="STRING",
+                            enum=["notes", "parts", "tasks", "attachments"],
+                            description="Which tab to open on the repair detail page. Omit to open the default (notes) tab.",
+                        ),
+                    },
+                    required=["repair_id"],
                 ),
             ),
             types.FunctionDeclaration(
@@ -234,7 +292,8 @@ def _make_config(system_prompt: str) -> types.LiveConnectConfig:
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Aoede")
-            )
+            ),
+            language_code="en-US",
         ),
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
@@ -258,6 +317,30 @@ async def _execute_tool(
             section = args.get("section", "repairs")
             await ws.send_text(json.dumps({"type": "action", "action": "navigate", "section": section}))
             return {"success": True, "navigated_to": section}
+
+        elif name == "set_repair_detail_tab":
+            tab = args.get("tab", "notes")
+            await ws.send_text(json.dumps({"type": "action", "action": "set_repair_detail_tab", "tab": tab}))
+            return {"success": True, "tab": tab}
+
+        elif name == "set_repairs_tab":
+            tab = args.get("tab", "all")
+            await ws.send_text(json.dumps({"type": "action", "action": "set_repairs_tab", "tab": tab}))
+            return {"success": True, "tab": tab}
+
+        elif name == "navigate_to_repair":
+            repair_id = args.get("repair_id")
+            if not repair_id:
+                return {"error": "repair_id is required"}
+            repair = db.query(WorkOrderRepair).filter(WorkOrderRepair.id == repair_id).first()
+            if not repair:
+                return {"error": f"Repair {repair_id} not found"}
+            tab = args.get("tab")
+            msg = {"type": "action", "action": "navigate_repair", "repair_id": repair_id}
+            if tab:
+                msg["tab"] = tab
+            await ws.send_text(json.dumps(msg))
+            return {"success": True, "repair_id": repair_id}
 
         elif name == "get_work_orders":
             status_filter = args.get("status_filter", "all")
@@ -317,14 +400,16 @@ async def _execute_tool(
                 .first()
             )
             if existing:
-                await ws.send_text(json.dumps({"type": "action", "action": "begin_shift"}))
+                begin_time = existing.begin_time.isoformat() if existing.begin_time else datetime.now(timezone.utc).isoformat()
+                await ws.send_text(json.dumps({"type": "action", "action": "begin_shift", "begin_time": begin_time, "shift_id": existing.id}))
                 return {"success": True, "message": "Shift already active", "shift_id": existing.id}
             shop_id = tech.shop_id or 1
             shift = Shift(technician_id=technician_id, shop_id=shop_id, created_user_id=technician_id)
             db.add(shift)
             db.commit()
             db.refresh(shift)
-            await ws.send_text(json.dumps({"type": "action", "action": "begin_shift"}))
+            begin_time = shift.begin_time.isoformat() if shift.begin_time else datetime.now(timezone.utc).isoformat()
+            await ws.send_text(json.dumps({"type": "action", "action": "begin_shift", "begin_time": begin_time, "shift_id": shift.id}))
             return {"success": True, "message": "Shift started", "shift_id": shift.id}
 
         elif name == "end_shift":
@@ -339,7 +424,7 @@ async def _execute_tool(
                 return {"error": "No active shift found"}
             shift.end_time = datetime.now(timezone.utc)
             db.commit()
-            await ws.send_text(json.dumps({"type": "action", "action": "end_shift"}))
+            await ws.send_text(json.dumps({"type": "action", "action": "end_shift", "shift_id": shift.id}))
             return {"success": True, "message": "Shift ended"}
 
         elif name == "set_indirect_activity":

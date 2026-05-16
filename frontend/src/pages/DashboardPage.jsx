@@ -104,7 +104,7 @@ export default function DashboardPage() {
 
   const { updateContext, registerActionHandler } = useNova();
 
-  const [activeSection, setActiveSection]       = useState('repairs');
+  const [activeSection, setActiveSection]       = useState(location.state?.section || 'repairs');
   const [activeTab, setActiveTab]               = useState('all');
   const [repairsViewMode, setRepairsViewMode]   = useState('grid');
   const [priorityFilter, setPriorityFilter]     = useState('All');
@@ -162,24 +162,35 @@ export default function DashboardPage() {
   // Register action handler so Nova can mutate dashboard state
   useEffect(() => {
     return registerActionHandler((action) => {
-      if (action.action === 'navigate') setActiveSection(action.section);
+      if (action.action === 'navigate') {
+        setActiveSection(action.section);
+      }
+      if (action.action === 'navigate_repair') {
+        navigate(`/repair/${action.repair_id}`, { state: { technician, tab: action.tab } });
+      }
+      if (action.action === 'set_repairs_tab') {
+        setActiveSection('repairs');
+        setActiveTab(action.tab);
+        setRepairsPage(1);
+      }
       if (action.action === 'begin_shift') {
-        beginShift(technician.id, technician.shopId)
-          .then((response) => {
-            const data = response.data;
-            setShiftActive(true);
-            const startTime = data.beginTime ?? new Date().toISOString();
-            setShiftStartedAt(startTime);
-            setShiftDuration(Date.now() - new Date(startTime).getTime());
-          })
-          .catch(() => {});
+        // Backend already created the shift in DB — update state directly using
+        // the begin_time the backend sends so there's no redundant API call.
+        const startTime = action.begin_time ?? new Date().toISOString();
+        setShiftActive(true);
+        setShiftStartedAt(startTime);
+        setShiftDuration(Date.now() - new Date(startTime).getTime());
       }
       if (action.action === 'end_shift') {
-        endShift(technician.id)
-          .then(() => { setShiftActive(false); setShiftStartedAt(null); setShiftDuration(0); })
-          .catch(() => {});
+        // Backend already ended the shift — just clear local state.
+        setShiftActive(false);
+        setShiftStartedAt(null);
+        setShiftDuration(0);
       }
-      if (action.action === 'set_indirect_activity') setCurrentActivity(action.activity);
+      if (action.action === 'set_indirect_activity') {
+        setCurrentActivity(action.activity);
+        localStorage.setItem(activityKey, action.activity);
+      }
     });
   }, [registerActionHandler, technician.id, technician.shopId]); // eslint-disable-line
 

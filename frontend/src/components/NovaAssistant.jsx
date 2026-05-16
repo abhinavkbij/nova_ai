@@ -74,6 +74,24 @@ function getTechnicianFromStorage() {
   } catch { return null; }
 }
 
+// Human-readable labels shown in the action toast for each action type
+const ACTION_TOAST_LABELS = {
+  begin_shift:          'Shift started',
+  end_shift:            'Shift ended',
+  set_indirect_activity: (a) => `Activity set: ${a.activity}`,
+  navigate:             (a) => `Navigating to ${a.section}`,
+  add_note:             'Note added',
+  refresh_notes:        'Notes updated',
+  refresh_repair:       'Repair updated',
+  update_work_order_status: (a) => `Status changed to ${a.status_code}`,
+};
+
+function getToastLabel(action) {
+  const entry = ACTION_TOAST_LABELS[action.action];
+  if (!entry) return null;
+  return typeof entry === 'function' ? entry(action) : entry;
+}
+
 // screenContext shape: { screen, technicianId, shopId, repairId, woNumber, repairTitle, repairStatus, priority }
 export default function NovaAssistant({ screenContext = {}, onAction }) {
   const [isOpen, setIsOpen]           = useState(false);
@@ -82,6 +100,7 @@ export default function NovaAssistant({ screenContext = {}, onAction }) {
   const [isRecording, setIsRecording] = useState(false);
   const [textInput, setTextInput]     = useState('');
   const [connected, setConnected]     = useState(false);
+  const [toast, setToast]             = useState(null); // { label, id }
 
   const wsRef              = useRef(null);
   const audioCtxRef        = useRef(null);
@@ -183,6 +202,13 @@ export default function NovaAssistant({ screenContext = {}, onAction }) {
           break;
         case 'action':
           onActionRef.current?.(data);
+          // Show toast immediately so the UI change is visible even when panel is closed
+          const label = getToastLabel(data);
+          if (label) {
+            const toastId = Date.now();
+            setToast({ label, id: toastId });
+            setTimeout(() => setToast((t) => t?.id === toastId ? null : t), 3000);
+          }
           break;
         case 'error':
           setStatus('error');
@@ -301,6 +327,17 @@ export default function NovaAssistant({ screenContext = {}, onAction }) {
 
   return (
     <>
+      {/* Action toast — appears above the button, visible even when panel is closed */}
+      {toast && (
+        <div
+          key={toast.id}
+          className="fixed bottom-24 right-6 z-50 flex items-center gap-2 bg-gray-900 text-white text-sm font-medium px-4 py-2.5 rounded-xl shadow-lg animate-fade-in"
+        >
+          <CheckIcon className="w-4 h-4 text-green-400 shrink-0" />
+          {toast.label}
+        </div>
+      )}
+
       {/* Floating trigger */}
       <button
         onClick={() => setIsOpen((o) => !o)}
@@ -565,6 +602,14 @@ function SendIcon({ className }) {
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="m22 2-7 20-4-9-9-4Z" />
       <path d="M22 2 11 13" />
+    </svg>
+  );
+}
+
+function CheckIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
     </svg>
   );
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useNova } from '../context/NovaContext';
 import {
   Home, Wrench, Package, QrCode, HelpCircle,
@@ -61,6 +61,7 @@ function formatDateTime(value) {
 export default function RepairDetailPage() {
   const { repairId } = useParams();
   const navigate     = useNavigate();
+  const location     = useLocation();
   const { updateContext, registerActionHandler } = useNova();
 
   const technician = (() => {
@@ -103,7 +104,7 @@ export default function RepairDetailPage() {
   const [expandedInstructions, setExpandedInstructions] = useState(new Set());
 
   // ── UI state ───────────────────────────────────────────────────────────────
-  const [activeTab,      setActiveTab]      = useState('notes');
+  const [activeTab,      setActiveTab]      = useState(location.state?.tab || 'notes');
   const [showStartModal, setShowStartModal] = useState(false);
   const [showDoneModal,  setShowDoneModal]  = useState(false);
   const [completing,     setCompleting]     = useState(false);
@@ -149,6 +150,13 @@ export default function RepairDetailPage() {
   // Register action handler — Nova can trigger note/repair refreshes
   useEffect(() => {
     return registerActionHandler((action) => {
+      if (action.action === 'navigate') {
+        navigate('/dashboard', { state: { section: action.section } });
+      }
+      if (action.action === 'navigate_repair') {
+        navigate(`/repair/${action.repair_id}`, { state: { technician, tab: action.tab } });
+      }
+      if (action.action === 'set_repair_detail_tab') setActiveTab(action.tab);
       if (action.action === 'refresh_notes') fetchNotes(notesSearchQuery);
       if (action.action === 'refresh_repair') {
         getWorkOrderRepair(repairId)
