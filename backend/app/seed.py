@@ -10,27 +10,56 @@ import app.models  # noqa: F401 — registers all ORM classes with Base
 from app.models.shop import Shop
 from app.models.technician import Technician
 from app.models.shift import Shift
-from app.models.work_order import WorkOrderRepair, Task, WorkOrderNote
-from app.models.part import Part
+from app.models.asset import Asset
+from app.models.work_order import WorkOrder, WorkOrderRepair, Task, WorkOrderNote
+from app.models.part import Part, PartCatalog
 from app.models.lookup import IndirectActivity, WorkOrderStatus, RepairReason, PartRequestStatus
 
 
 def seed_database(db):
     # ── Lookup tables ───────────────────────────────────────────────────────
     db.add_all([
-        WorkOrderStatus(code="A", description="Active"),
-        WorkOrderStatus(code="C", description="Completed"),
-        WorkOrderStatus(code="H", description="On Hold"),
-        WorkOrderStatus(code="W", description="Waiting Parts"),
-        WorkOrderStatus(code="R", description="Return to Shop"),
+        WorkOrderStatus(code="A", description="Active - Repair in Progress"),
+        WorkOrderStatus(code="Q", description="Awaiting Dept Repair Authorization"),
+        WorkOrderStatus(code="W", description="Awaiting Technician Asset In-Service"),
+        WorkOrderStatus(code="M", description="Awaiting Technician Asset Out of Service"),
+        WorkOrderStatus(code="E", description="Estimate"),
+        WorkOrderStatus(code="F", description="Finished - Ready for Pickup"),
+        WorkOrderStatus(code="O", description="Parts On Order - Asset In Service"),
+        WorkOrderStatus(code="P", description="Parts On Ordered - Asset Out of Service"),
+        WorkOrderStatus(code="I", description="Pending Vendor Invoice"),
+        WorkOrderStatus(code="N", description="Ready for Part Review"),
+        WorkOrderStatus(code="R", description="Road Call - Dispatched"),
+        WorkOrderStatus(code="V", description="Vendor Repair"),
+        WorkOrderStatus(code="D", description="WAITING FUNDS"),
     ])
 
     db.add_all([
-        RepairReason(description="Customer Complaint"),
-        RepairReason(description="Preventive Maintenance"),
-        RepairReason(description="Accident Damage"),
-        RepairReason(description="Warranty Claim"),
-        RepairReason(description="Recall"),
+        RepairReason(description="Accident"),
+        RepairReason(description="Accident, Non-Reported"),
+        RepairReason(description="Additional PM-Tasks"),
+        RepairReason(description="Alert"),
+        RepairReason(description="Body Work"),
+        RepairReason(description="Brake Service"),
+        RepairReason(description="BreakDown"),
+        RepairReason(description="Electrical Issue"),
+        RepairReason(description="Engine Repair"),
+        RepairReason(description="General Repair"),
+        RepairReason(description="General Repair - Driver Report"),
+        RepairReason(description="Inspection"),
+        RepairReason(description="Maintenance"),
+        RepairReason(description="Management Request"),
+        RepairReason(description="Manufacture Recall/Campaign"),
+        RepairReason(description="Natural Disaster"),
+        RepairReason(description="Operator Responsible"),
+        RepairReason(description="Other"),
+        RepairReason(description="Routine Maintenance"),
+        RepairReason(description="Statutory Inspection"),
+        RepairReason(description="Tire Replacement"),
+        RepairReason(description="Transmission Repair"),
+        RepairReason(description="Vandalism"),
+        RepairReason(description="Vendor Repair"),
+        RepairReason(description="Warranty"),
     ])
 
     db.add_all([
@@ -234,6 +263,80 @@ def seed_database(db):
         repairs.append(r)
     db.flush()
 
+    # ── Link first repair to a work order document ──────────────────────────
+    demo_wo = WorkOrder(
+        wo_number=repairs[0].wo_number,
+        asset_number=repairs[0].vin,
+        asset_year=repairs[0].asset_year,
+        asset_make=repairs[0].asset_make,
+        asset_model=repairs[0].asset_model,
+        shop_id=demo_tech.shop_id,
+        org_id=demo_tech.shop_id,
+        status_code=repairs[0].wo_status_code,
+        priority=repairs[0].priority,
+    )
+    db.add(demo_wo)
+    db.flush()
+    repairs[0].work_order_id = demo_wo.id
+    db.flush()
+
+    # ── Work order repairs for Tyler Brooks ─────────────────────────────────
+    tyler = technicians[6]  # Tyler Brooks, Westside Fleet Services
+    tyler_shift = Shift(
+        technician_id=tyler.id,
+        shop_id=tyler.shop_id,
+        begin_time=datetime.now(timezone.utc) - timedelta(hours=3, minutes=45),
+        created_user_id=1,
+        status_indicator=None,
+    )
+    db.add(tyler_shift)
+    db.flush()
+
+    tyler_vehicles = [
+        (2020, "Ford", "Transit 250", "1FTBR1C80LKA11111", "ENG-001"),
+        (2022, "Chevrolet", "Express 2500", "1GCWGAFG0N1222222", "BRK-001"),
+        (2019, "Ford", "F-250", "1FT7W2BT0KEA33333", "OIL-002"),
+        (2021, "Ram", "1500 Classic", "1C6RR6FT8MS444444", "SUS-002"),
+        (2018, "GMC", "Yukon XL", "1GKS2HKJ9JR555555", "ELC-001"),
+        (2023, "Toyota", "Tundra", "5TFDY5F12NX666666", "TIR-003"),
+    ]
+    tyler_titles = [
+        "Engine Oil Leak Diagnosis",
+        "Rear Brake Drum Replacement",
+        "Full Synthetic Oil Service",
+        "Front Suspension Alignment",
+        "Electrical System Diagnosis",
+        "Tire Rotation – Full Set",
+    ]
+    tyler_priorities    = ["HIGH", "MEDIUM", "LOW", "MEDIUM", "HIGH", "LOW"]
+    tyler_parts_statuses = ["PARTS REQUESTED", "PARTS UNASSIGNED", "PARTS ISSUED", "PARTS UNASSIGNED", "PARTS UNASSIGNED", "PARTS UNASSIGNED"]
+    tyler_wo_statuses   = ["A", "A", "A", "A", "H", "A"]
+
+    tyler_repairs = []
+    for idx, (year, make, model, vin, rcode) in enumerate(tyler_vehicles):
+        date_in = datetime.now(timezone.utc) - timedelta(days=idx, hours=1)
+        r = WorkOrderRepair(
+            wo_number=f"WO-2024-{2000 + idx:04d}",
+            wo_status_code=tyler_wo_statuses[idx],
+            title=tyler_titles[idx],
+            asset_year=year,
+            asset_make=make,
+            asset_model=model,
+            vin=vin,
+            repair_code=rcode,
+            shop_id=tyler.shop_id,
+            time_standard=round(0.5 + idx * 0.4, 1),
+            date_in=date_in,
+            priority=tyler_priorities[idx],
+            parts_status=tyler_parts_statuses[idx],
+            technician_id=tyler.id,
+            shift_id=tyler_shift.id,
+            is_open=tyler_wo_statuses[idx] != "C",
+        )
+        db.add(r)
+        tyler_repairs.append(r)
+    db.flush()
+
     # ── Tasks for first two repairs ─────────────────────────────────────────
     task_templates = [
         [
@@ -266,19 +369,21 @@ def seed_database(db):
     db.add_all([
         WorkOrderNote(
             repair_id=repairs[0].id,
+            document_id=None,
             subject="Customer request",
             note="Customer requested all-season tires if any need replacement.",
-            is_document=False,
-            is_pending=False,
+            is_work_order=False,
+            user_name=demo_tech.name.split()[0] + "." + demo_tech.name.split()[-1][0] if len(demo_tech.name.split()) >= 2 else demo_tech.name,
             created_user_id=1,
             created_technician_id=demo_tech.id,
         ),
         WorkOrderNote(
-            repair_id=repairs[0].id,
+            repair_id=None,
+            document_id=repairs[0].work_order_id,
             subject="Tow-in note",
             note="Vehicle towed in — check for suspension damage from kerb impact.",
-            is_document=False,
-            is_pending=True,
+            is_work_order=True,
+            user_name=demo_tech.name.split()[0] + "." + demo_tech.name.split()[-1][0] if len(demo_tech.name.split()) >= 2 else demo_tech.name,
             created_user_id=1,
             created_technician_id=demo_tech.id,
         ),
@@ -307,8 +412,70 @@ def seed_database(db):
             is_own_request=True,
         ))
 
+    # ── Parts catalog ────────────────────────────────────────────────────────────
+    catalog_items = [
+        ("AF-4425",   "Brake Oil",                        "DOT 3/4 brake fluid, 1 litre",                    24),
+        ("AF-4426",   "Brake Fluid",                      "DOT 5.1 synthetic brake fluid, 500ml",            18),
+        ("HP-8845-A", "Hydraulic Pump Assembly",          "Heavy-duty replacement pump assembly",             6),
+        ("HS-2234",   "Hydraulic Seal Kit",               "Complete seal kit for hydraulic systems",          4),
+        ("HO-5512",   "Hydraulic Oil 5L",                 "ISO 46 hydraulic oil, 5 litre",                   12),
+        ("OIL-5W30",  "5W-30 Synthetic Oil (5qt)",        "Full synthetic motor oil, 5 quart",               30),
+        ("OIL-5W20",  "5W-20 Synthetic Oil (5qt)",        "Full synthetic motor oil, 5 quart",               28),
+        ("FLT-OIL",   "Engine Oil Filter",                "Standard engine oil filter",                       50),
+        ("FLT-AIR",   "Engine Air Filter",                "Flat-panel air filter",                            22),
+        ("FLT-FUEL",  "Fuel Filter",                      "In-line fuel filter",                              15),
+        ("BP-F-STD",  "Front Brake Pad Set",              "Semi-metallic front brake pads",                   10),
+        ("BP-R-STD",  "Rear Brake Pad Set",               "Semi-metallic rear brake pads",                    8),
+        ("RTR-DR",    "Brake Rotor – Driver Side",        "Vented rotor, driver side",                        5),
+        ("RTR-PS",    "Brake Rotor – Passenger Side",     "Vented rotor, passenger side",                     5),
+        ("SPK-8PK",   "Spark Plug Set (8pk)",             "Iridium spark plugs, pack of 8",                   9),
+        ("SPK-4PK",   "Spark Plug Set (4pk)",             "Iridium spark plugs, pack of 4",                   14),
+        ("TIR-AS",    "All-Season Tire 265/70R17",        "Highway all-season tire, load rating E",           8),
+        ("TIR-WN",    "Winter Tire 265/70R17",            "Studded winter tire, load rating E",               6),
+        ("TBT-CLT",   "Clutch Kit – Standard",            "Clutch disc, pressure plate, release bearing",     3),
+        ("HTR-CORE",  "Heater Core",                      "Aluminum heater core replacement",                 2),
+        ("SUS-STRUT", "Front Strut Assembly",             "Complete front strut assembly with spring",        4),
+        ("SUS-CNTRL", "Control Arm – Front Lower",        "Front lower control arm with bushings",            6),
+        ("TRN-FLUID", "Transmission Fluid (1 gal)",       "ATF+4 automatic transmission fluid",              20),
+        ("TRN-FILT",  "Transmission Filter Kit",          "Pan gasket and filter kit",                        7),
+        ("EXH-MNFLD", "Exhaust Manifold Gasket",          "OEM-spec exhaust manifold gasket set",            11),
+        ("EXH-MFLR",  "Muffler – Universal",              "Aluminized steel muffler",                         3),
+        ("BELT-SERP", "Serpentine Belt",                   "EPDM ribbed serpentine belt",                     16),
+        ("BELT-TIM",  "Timing Belt Kit",                   "Timing belt with water pump and tensioner",        4),
+        ("COOL-RAD",  "Radiator",                          "Aluminium-core direct-fit radiator",               2),
+        ("COOL-THRM", "Thermostat + Housing",              "OEM-spec thermostat kit",                          9),
+    ]
+    db.add_all([
+        PartCatalog(part_number=pn, name=nm, description=desc, available_qty=qty)
+        for pn, nm, desc, qty in catalog_items
+    ])
+
+    # ── Assets ────────────────────────────────────────────────────────────────
+    asset_data = [
+        ("1234", shops[0], 2019, "Honda", "Civic Hybrid", "+1-555-333-8567", "SEDAN1", "Replacement Upcoming [U]", 14.8, "04/11/2029", 15, 12345.0),
+        ("2698", shops[0], 2019, "Honda", "Civic Hybrid", "1HGFE2F59KA004829", "SEDAN2", "Active Fleet [001]",      14.8, "04/11/2029", 15, 9823.0),
+        ("FL-A-042", shops[1], 2021, "Ford",  "F-150",        "1FTFW1EG0MFA12345", "TRUCK1", "Active",                   22.1, "06/15/2030", 20, 31200.0),
+        ("VH-2024", shops[2], 2022, "Toyota", "Camry",         "4T1BF1FK0EU777777", "CAM22",  "Active",                    8.5, "09/01/2028", 12, 4500.0),
+        ("MWO-099", shops[3], 2018, "Dodge",  "Ram 1500",      "1C6RR7LT0ES654321", "RAM1",   "Active",                   19.3, "01/20/2027", 18, 55600.0),
+    ]
+    for an, shop, yr, mk, mdl, vin, lic, status, tpv, ord_, psu, meter in asset_data:
+        db.add(Asset(
+            asset_number=an,
+            org_id=shop.id,
+            year=yr,
+            make=mk,
+            model=mdl,
+            vin=vin,
+            license=lic,
+            status=status,
+            total_point_value=tpv,
+            original_replacement_date=ord_,
+            point_scale_used=psu,
+            meter_reading=meter,
+        ))
+
     db.commit()
-    print(f"Seeded: 5 shops, {len(technicians)} technicians, 10 work orders, tasks, notes, parts.")
+    print(f"Seeded: 5 shops, {len(technicians)} technicians, 10 work orders, tasks, notes, parts, {len(catalog_items)} catalog items, {len(asset_data)} assets.")
     print(f"Demo technician ID: {demo_tech.id} — PIN: 1234")
 
 

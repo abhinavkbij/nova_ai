@@ -5,7 +5,7 @@ import math
 from datetime import datetime, timezone
 
 from app.database import get_db
-from app.models.part import Part
+from app.models.part import Part, PartCatalog
 from app.models.lookup import PartRequestStatus
 from app.schemas.part import PartOut, PaginatedParts, PartInventoryOut, PartCreateIn, PartRequestStatusOut
 
@@ -95,6 +95,39 @@ def _fasterweb_message_envelope(data: list[dict], page: int, page_size: int, tot
         "message": None,
         "pagination": _pagination(page, page_size, total),
         "timestamp": _utc_timestamp(),
+    }
+
+
+@router.get("/parts/catalog")
+def search_part_catalog(
+    q: Optional[str] = Query(None),
+    pageNumber: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    query = db.query(PartCatalog)
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        query = query.filter(
+            PartCatalog.name.ilike(term) | PartCatalog.part_number.ilike(term)
+        )
+    total = query.count()
+    items = query.offset((pageNumber - 1) * pageSize).limit(pageSize).all()
+    return {
+        "success": True,
+        "data": [
+            {
+                "partId": c.part_number,
+                "name": c.name,
+                "description": c.description or "",
+                "inStock": c.available_qty > 0,
+                "availableQty": c.available_qty,
+            }
+            for c in items
+        ],
+        "total": total,
+        "pageNumber": pageNumber,
+        "pageSize": pageSize,
     }
 
 

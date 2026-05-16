@@ -24,3 +24,14 @@ class Part(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     repair = relationship("WorkOrderRepair", back_populates="parts")
+
+
+class PartCatalog(Base):
+    __tablename__ = "part_catalog"
+
+    id = Column(Integer, primary_key=True, index=True)
+    part_number = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    available_qty = Column(Integer, default=0)
+    unit_price = Column(Integer, nullable=True)

@@ -61,21 +61,18 @@ class TaskUpdateIn(BaseModel):
 
 
 class NoteOut(BaseModel):
-    id: int
-    repairId: Optional[int] = None
-    subject: Optional[str] = None
-    note: Optional[str] = None
-    isDocument: bool = False
-    isPending: bool = False
-    createdUserID: Optional[int] = None
-    createdTechnicianID: Optional[int] = None
-    createdAt: Optional[datetime] = None
-
-    model_config = {"from_attributes": True}
+    documentId: int = 0
+    repairId: int
+    noteId: int
+    noteSubject: Optional[str] = None
+    noteText: Optional[str] = None
+    createdDate: Optional[datetime] = None
+    userName: str = ""
+    isWorkOrder: bool = False
 
 
 class NoteCreateIn(BaseModel):
-    id: Optional[int] = None
+    id: Optional[int] = None       # work order ID if isDocument=True, repair ID if False
     subject: Optional[str] = None
     note: Optional[str] = None
     isDocument: bool = False

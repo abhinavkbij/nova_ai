@@ -1,39 +1,31 @@
 import { useState, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Home, Wrench, Package, QrCode, HelpCircle,
-  Clock, ChevronDown, ChevronRight, LayoutGrid, List, X,
-  Search, ArrowRight
+  Clock, ChevronDown, LayoutGrid, List, X,
+  Search, ArrowRight, LogOut, Plus, Mail,
+  AlertCircle, ArrowUpCircle, MinusCircle, ArrowDownCircle,
 } from 'lucide-react';
-import { CURRENT_TECHNICIAN } from '../data/mockData';
-import { getTechnicianRepairs, getWorkOrderRepair } from '../api/workOrders';
+import { searchRepairs } from '../api/workOrders';
 import { getPartsMessages, getRequestedParts } from '../api/parts';
+import { getStatusIndicator, submitIndirectActivity, beginShift, endShift } from '../api/technicians';
 import IndirectActivityModal from '../components/IndirectActivityModal';
 import NovaAssistant from '../components/NovaAssistant';
 
 function formatDuration(ms) {
   const totalSeconds = Math.floor(ms / 1000);
-  const days = Math.floor(totalSeconds / 86400);
-  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const days    = Math.floor(totalSeconds / 86400);
+  const hours   = Math.floor((totalSeconds % 86400) / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  return `${days}d ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  return `${days}d ${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
 }
 
-const PRIORITY_STYLES = {
-  LOW:    'bg-green-50 text-green-700 border-green-200',
-  MEDIUM: 'bg-blue-50 text-blue-700 border-blue-200',
-  MED:    'bg-blue-50 text-blue-700 border-blue-200',
-  HIGH:   'bg-orange-50 text-orange-700 border-orange-200',
-  URGENT: 'bg-red-50 text-red-700 border-red-200',
-  RED:    'bg-red-50 text-red-700 border-red-200',
-  WP:     'bg-slate-50 text-slate-700 border-slate-200',
-};
-
-const PARTS_STYLES = {
-  'PARTS UNASSIGNED': 'bg-amber-50 text-amber-700 border-amber-200',
-  'PARTS ASSIGNED':   'bg-blue-50 text-blue-700 border-blue-200',
-  'PARTS ISSUED':     'bg-green-50 text-green-700 border-green-200',
+const PRIORITY_BADGE = {
+  URGENT: { bg: 'bg-red-50',    border: 'border-red-300',    text: 'text-red-600',    Icon: AlertCircle     },
+  HIGH:   { bg: 'bg-amber-50',  border: 'border-amber-300',  text: 'text-amber-600',  Icon: ArrowUpCircle   },
+  MEDIUM: { bg: 'bg-slate-50',  border: 'border-slate-300',  text: 'text-slate-600',  Icon: MinusCircle     },
+  LOW:    { bg: 'bg-green-50',  border: 'border-green-300',  text: 'text-green-600',  Icon: ArrowDownCircle },
 };
 
 const STATUS_STYLES = {
@@ -58,179 +50,193 @@ function normalizePriority(priority) {
 
 function mapFasterWebRepair(item) {
   const titleParts = [item.actionDesc, item.groupDesc, item.componentDesc].filter(Boolean);
-  const asset = [item.yearMake, item.model].filter(Boolean).join(' ');
-
+  const asset      = [item.yearMake, item.model].filter(Boolean).join(' ');
   return {
-    id: item.repairId,
-    repairId: item.repairId,
-    woNumber: item.documentNumber || item.assetNumber || String(item.documentId ?? ''),
-    woStatus: item.workOrderStatusCode || '',
-    title: titleParts.join(' ') || item.componentDesc || `Repair ${item.repairId}`,
-    priority: normalizePriority(item.priority),
+    id:           item.repairId,
+    repairId:     item.repairId,
+    woNumber:     item.documentNumber || item.assetNumber || String(item.documentId ?? ''),
+    woStatus:     item.workOrderStatusCode || '',
+    title:        titleParts.join(' ') || item.componentDesc || `Repair ${item.repairId}`,
+    priority:     normalizePriority(item.priority),
     priorityCode: item.priority || '',
-    priorityDesc: item.priorityDesc || '',
-    partsStatus: item.hasParts ? 'PARTS ASSIGNED' : 'PARTS UNASSIGNED',
-    asset: asset || '--',
-    assetId: item.assetNumber || item.assetId || '--',
-    repairCode: item.repairScheduleID || String(item.repairId ?? ''),
-    shop: item.maintShop || item.maintShopDesc || '--',
+    partsStatus:  item.hasParts ? 'PARTS ASSIGNED' : 'PARTS UNASSIGNED',
+    asset:        asset || '--',
+    assetId:      item.assetNumber || item.assetId || '--',
+    repairCode:   item.repairScheduleID || String(item.repairId ?? ''),
+    shop:         item.maintShop || item.maintShopDesc || '--',
     timeStandard: item.timeStandardHours == null ? '--' : `${Number(item.timeStandardHours).toFixed(1)}h`,
-    dateIn: formatRepairDate(item.inDate),
-    isOpen: item.status !== 'Complete',
-    rawStatus: item.status,
+    dateIn:       formatRepairDate(item.inDate),
+    isOpen:       item.status !== 'Complete',
+    rawStatus:    item.status,
+    messageCount: item.messageCount ?? 0,
   };
 }
 
 function mapPartRequest(part) {
   return {
-    id: part.id,
-    status: part.statusName || 'Requested',
-    name: part.partName || '--',
+    id:          part.id,
+    status:      part.statusName || 'Requested',
+    name:        part.partName || '--',
     description: part.requestComment || '--',
-    partId: part.partId || '--',
-    repairCode: part.repairCode || '--',
-    woNumber: part.woNumber || '--',
+    partId:      part.partId || '--',
+    repairCode:  part.repairCode || '--',
+    woNumber:    part.woNumber || '--',
   };
 }
 
+const REPAIR_ROWS_OPTIONS = [6, 10, 25];
+
 export default function DashboardPage() {
   const location = useLocation();
-  const technician = location.state?.technician || CURRENT_TECHNICIAN;
+  const navigate = useNavigate();
 
-  const [activeSection, setActiveSection] = useState('repairs');
-  const [activeTab, setActiveTab] = useState('open');
-  const [partsTab, setPartsTab] = useState('active');
-  const [partsFilter, setPartsFilter] = useState('All');
-  const [partsFilterOpen, setPartsFilterOpen] = useState(false);
-  const [viewMode, setViewMode] = useState('grid');
-  const [shiftActive, setShiftActive] = useState(true);
-  const [shiftDuration, setShiftDuration] = useState(Date.now() - CURRENT_TECHNICIAN.shiftStartedAt.getTime());
-  const [indirectModal, setIndirectModal] = useState(false);
-  const [currentActivity, setCurrentActivity] = useState('Blood Drive');
-  const [category, setCategory] = useState('');
-  const [searchText, setSearchText] = useState('');
-  const [repairs, setRepairs] = useState([]);
-  const [repairsLoading, setRepairsLoading] = useState(false);
-  const [repairsError, setRepairsError] = useState('');
-  const [repairCounts, setRepairCounts] = useState({ open: 0, closed: 0 });
-  const [parts, setParts] = useState([]);
-  const [partsCounts, setPartsCounts] = useState({ requested: 0, issued: 0, delayed: 0 });
-  const [partsLoading, setPartsLoading] = useState(false);
-  const [partsError, setPartsError] = useState('');
-  const [partsMessages, setPartsMessages] = useState([]);
-  const [selectedRepair, setSelectedRepair] = useState(null);
-  const [repairDetailLoading, setRepairDetailLoading] = useState(false);
-  const [repairDetailError, setRepairDetailError] = useState('');
+  const technician = (() => {
+    if (location.state?.technician) {
+      sessionStorage.setItem('loggedInTechnician', JSON.stringify(location.state.technician));
+      return location.state.technician;
+    }
+    const saved = sessionStorage.getItem('loggedInTechnician');
+    return saved ? JSON.parse(saved) : null;
+  })();
+
+  useEffect(() => { if (!technician) navigate('/'); }, []); // eslint-disable-line
+  if (!technician) return null;
+
+  const [activeSection, setActiveSection]       = useState('repairs');
+  const [activeTab, setActiveTab]               = useState('all');
+  const [repairsViewMode, setRepairsViewMode]   = useState('grid');
+  const [priorityFilter, setPriorityFilter]     = useState('All');
+  const [priorityFilterOpen, setPriorityFilterOpen] = useState(false);
+  const [repairsPage, setRepairsPage]           = useState(1);
+  const [repairsRows, setRepairsRows]           = useState(6);
+  const [repairsRowsDDOpen, setRepairsRowsDDOpen] = useState(false);
+  const [partsTab, setPartsTab]                 = useState('active');
+  const [partsFilter, setPartsFilter]           = useState('All');
+  const [partsFilterOpen, setPartsFilterOpen]   = useState(false);
+  const [viewMode, setViewMode]                 = useState('grid');
+  const [shiftActive, setShiftActive]           = useState(false);
+  const [shiftStartedAt, setShiftStartedAt]     = useState(null);
+  const [shiftDuration, setShiftDuration]       = useState(0);
+  const [indirectModal, setIndirectModal]       = useState(false);
+  const [logoutModal, setLogoutModal]           = useState(false);
+  const activityKey = `status_activity_${technician.id}`;
+  const [currentActivity, setCurrentActivity]   = useState(
+    () => localStorage.getItem(activityKey) || ''
+  );
+  const [searchField, setSearchField]           = useState('Repair Id');
+  const [searchInput, setSearchInput]           = useState('');
+  const [searchValue, setSearchValue]           = useState('');
+  const [scope, setScope]                       = useState('My Repairs in My Shop');
+  const [searchFieldOpen, setSearchFieldOpen]   = useState(false);
+  const [repairsTotalItems, setRepairsTotalItems] = useState(0);
+  const [repairs, setRepairs]                   = useState([]);
+  const [repairsLoading, setRepairsLoading]     = useState(false);
+  const [repairsError, setRepairsError]         = useState('');
+  const [parts, setParts]                       = useState([]);
+  const [partsCounts, setPartsCounts]           = useState({ requested: 0, issued: 0, delayed: 0 });
+  const [partsLoading, setPartsLoading]         = useState(false);
+  const [partsError, setPartsError]             = useState('');
+  const [partsMessages, setPartsMessages]       = useState([]);
 
   useEffect(() => {
-    if (!shiftActive) return;
-    const id = setInterval(() => {
-      setShiftDuration(Date.now() - CURRENT_TECHNICIAN.shiftStartedAt.getTime());
-    }, 1000);
+    if (!shiftActive || !shiftStartedAt) return;
+    const id = setInterval(() => setShiftDuration(Date.now() - new Date(shiftStartedAt).getTime()), 1000);
     return () => clearInterval(id);
-  }, [shiftActive]);
+  }, [shiftActive, shiftStartedAt]);
+
+  useEffect(() => {
+    getStatusIndicator(technician.id)
+      .then((response) => {
+        const data = response.data;
+        if (data?.isActive) {
+          setShiftActive(true);
+          setShiftStartedAt(data.startedAt ?? null);
+          if (data.durationSeconds != null) setShiftDuration(data.durationSeconds * 1000);
+        }
+        if (data?.statusIndicator) {
+          setCurrentActivity(data.statusIndicator);
+          localStorage.setItem(activityKey, data.statusIndicator);
+        }
+      })
+      .catch(() => {});
+  }, [technician.id, activityKey]);
+
+  useEffect(() => {
+    const t = setTimeout(() => { setSearchValue(searchInput); setRepairsPage(1); }, 400);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
   useEffect(() => {
     let ignore = false;
-    const statusFilter = activeTab === 'open' ? 'Open' : 'Closed';
-
+    const statusFilter = activeTab === 'all' ? 'All' : (activeTab === 'completed' || activeTab === 'lastWO') ? 'Closed' : 'Open';
     setRepairsLoading(true);
     setRepairsError('');
-    getTechnicianRepairs({
+    searchRepairs({
       technicianId: technician.id,
-      page: 1,
-      pageSize: 6,
-      sortBy: 'InDate',
-      sortOrder: 'desc',
+      shopId: technician.shopId,
+      searchText: searchField,
+      searchValue,
+      scope,
+      page: repairsPage,
+      pageSize: repairsRows,
       statusFilter,
     })
       .then((response) => {
         if (ignore) return;
         const payload = response.data?.data;
         setRepairs((payload?.items || []).map(mapFasterWebRepair));
-        setRepairCounts({
-          open: payload?.openRepairCount ?? 0,
-          closed: payload?.closedRepairCount ?? 0,
-        });
+        setRepairsTotalItems(payload?.pagination?.totalItems ?? 0);
       })
       .catch(() => {
         if (ignore) return;
         setRepairs([]);
-        setRepairCounts({ open: 0, closed: 0 });
+        setRepairsTotalItems(0);
         setRepairsError('Failed to load repairs');
       })
-      .finally(() => {
-        if (!ignore) setRepairsLoading(false);
-      });
+      .finally(() => { if (!ignore) setRepairsLoading(false); });
+    return () => { ignore = true; };
+  }, [activeTab, technician.id, searchValue, scope, repairsPage, repairsRows]);
 
-    return () => {
-      ignore = true;
-    };
-  }, [activeTab, technician.id]);
+  const repairsList = repairs.filter((wo) => {
+    if (priorityFilter !== 'All' && wo.priority !== priorityFilter) return false;
+    return true;
+  });
 
-  const repairsList = repairs.filter((wo) =>
-    !searchText || wo.title.toLowerCase().includes(searchText.toLowerCase()) ||
-    wo.woNumber.includes(searchText)
-  );
+  const repairsTotalPages = Math.max(1, Math.ceil(repairsTotalItems / repairsRows));
+  const pagedRepairs      = repairsList;
+  const repairsFrom       = repairsTotalItems === 0 ? 0 : (repairsPage - 1) * repairsRows + 1;
+  const repairsTo         = Math.min(repairsPage * repairsRows, repairsTotalItems);
 
   useEffect(() => {
     let ignore = false;
     const isRequestActive = partsTab === 'active';
     const statusIdMap = { Requested: 1, Issued: 2, Cancelled: 3, Delayed: 4 };
-
     setPartsLoading(true);
     setPartsError('');
-    getRequestedParts({
-      technicianId: technician.id,
-      isRequestActive,
-      requestedPartStatusId: statusIdMap[partsFilter],
-      pageNumber: 1,
-      pageSize: 20,
-    })
+    getRequestedParts({ technicianId: technician.id, isRequestActive, requestedPartStatusId: statusIdMap[partsFilter], pageNumber: 1, pageSize: 20 })
       .then((response) => {
         if (ignore) return;
         const payload = response.data;
         setParts((payload?.data || []).map(mapPartRequest));
-        setPartsCounts({
-          requested: payload?.requested ?? 0,
-          issued: payload?.issued ?? 0,
-          delayed: payload?.delayed ?? 0,
-        });
+        setPartsCounts({ requested: payload?.requested ?? 0, issued: payload?.issued ?? 0, delayed: payload?.delayed ?? 0 });
       })
-      .catch(() => {
-        if (ignore) return;
-        setParts([]);
-        setPartsCounts({ requested: 0, issued: 0, delayed: 0 });
-        setPartsError('Failed to load parts');
-      })
-      .finally(() => {
-        if (!ignore) setPartsLoading(false);
-      });
-
-    return () => {
-      ignore = true;
-    };
+      .catch(() => { if (ignore) return; setParts([]); setPartsCounts({ requested: 0, issued: 0, delayed: 0 }); setPartsError('Failed to load parts'); })
+      .finally(() => { if (!ignore) setPartsLoading(false); });
+    return () => { ignore = true; };
   }, [partsFilter, partsTab, technician.id]);
 
   useEffect(() => {
     let ignore = false;
     getPartsMessages({ technicianID: technician.id, pageNumber: 1, pageSize: 20 })
-      .then((response) => {
-        if (!ignore) setPartsMessages(response.data?.data || []);
-      })
-      .catch(() => {
-        if (!ignore) setPartsMessages([]);
-      });
-
-    return () => {
-      ignore = true;
-    };
+      .then((response) => { if (!ignore) setPartsMessages(response.data?.data || []); })
+      .catch(() => { if (!ignore) setPartsMessages([]); });
+    return () => { ignore = true; };
   }, [technician.id]);
 
   const partsList = parts.filter((p) => {
     const isActive = p.status === 'Requested' || p.status === 'Issued';
     if (partsTab === 'active' && !isActive) return false;
-    if (partsTab === 'past' && isActive) return false;
+    if (partsTab === 'past'   && isActive)  return false;
     if (partsFilter !== 'All' && p.status !== partsFilter) return false;
     return true;
   });
@@ -243,59 +249,63 @@ export default function DashboardPage() {
   };
 
   const openRepairDetail = (repairId) => {
-    setRepairDetailLoading(true);
-    setRepairDetailError('');
-    getWorkOrderRepair(repairId)
-      .then((response) => {
-        setSelectedRepair(response.data);
-      })
-      .catch(() => {
-        setRepairDetailError('Failed to load repair detail');
-      })
-      .finally(() => {
-        setRepairDetailLoading(false);
-      });
+    navigate(`/repair/${repairId}`, { state: { technician } });
+  };
+
+  const buildRepairPages = () => {
+    const t = repairsTotalPages;
+    if (t <= 5) return Array.from({ length: t }, (_, i) => i + 1);
+    const pages = [1];
+    if (repairsPage > 3) pages.push('…');
+    for (let i = Math.max(2, repairsPage - 1); i <= Math.min(t - 1, repairsPage + 1); i++) pages.push(i);
+    if (repairsPage < t - 2) pages.push('…');
+    if (t > 1) pages.push(t);
+    return pages;
   };
 
   return (
-    <div className="h-screen flex flex-col bg-gray-50 overflow-hidden" onClick={() => setPartsFilterOpen(false)}>
-      {/* Layout: sidebar + main */}
+    <div className="h-screen flex flex-col bg-gray-50 overflow-hidden" onClick={() => { setPartsFilterOpen(false); setPriorityFilterOpen(false); setRepairsRowsDDOpen(false); setSearchFieldOpen(false); }}>
       <div className="flex flex-1 min-h-0">
-        {/* Sidebar */}
-        <aside className="w-14 bg-white border-r border-gray-200 flex flex-col items-center py-3 gap-1 shrink-0">
+
+        {/* ── Sidebar ──────────────────────────────────────────────────── */}
+        <aside className="w-20 bg-white border-r border-gray-200 flex flex-col items-center py-4 gap-1 shrink-0">
           {[
-            { id: 'home',    icon: Home,     label: 'Home'    },
-            { id: 'repairs', icon: Wrench,   label: 'Repairs' },
-            { id: 'parts',   icon: Package,  label: 'Parts'   },
-            { id: 'vin',     icon: QrCode,   label: 'VIN'     },
+            { id: 'home',    icon: Home,    label: 'Home'        },
+            { id: 'repairs', icon: Wrench,  label: 'Repairs'     },
+            { id: 'parts',   icon: Package, label: 'Parts'       },
+            { id: 'vin',     icon: QrCode,  label: 'VIN Scanner' },
           ].map(({ id, icon: Icon, label }) => (
             <button
               key={id}
-              onClick={() => id === 'repairs' || id === 'parts' ? setActiveSection(id) : setActiveSection(id)}
+              onClick={() => setActiveSection(id)}
               title={label}
-              className={`w-10 h-10 rounded-xl flex flex-col items-center justify-center gap-0.5 transition-colors
+              className={`w-16 py-2.5 rounded-xl flex flex-col items-center gap-1 transition-colors
                 ${activeSection === id ? 'bg-blue-50 text-blue-600' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'}`}
             >
               <Icon className="w-5 h-5" />
-              <span className="text-[9px] font-medium leading-none">{label}</span>
+              <span className="text-[10px] font-medium leading-tight text-center">{label}</span>
             </button>
           ))}
           <div className="flex-1" />
-          <button title="Help" className="w-10 h-10 rounded-xl flex items-center justify-center text-gray-300 hover:text-gray-500 hover:bg-gray-100 transition-colors">
+          <button title="Help" className="w-16 py-2.5 rounded-xl flex flex-col items-center gap-1 text-gray-400 hover:text-gray-500 hover:bg-gray-100 transition-colors">
             <HelpCircle className="w-5 h-5" />
+            <span className="text-[10px] font-medium">Help</span>
           </button>
         </aside>
 
-        {/* Main content */}
+        {/* ── Main content ─────────────────────────────────────────────── */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+
           {/* Header */}
           <header className="bg-white border-b border-gray-200 px-4 py-2.5 flex items-center gap-3 shrink-0">
             <div className="flex items-center gap-2 flex-1">
               <span className="font-bold text-gray-900 text-sm">Company</span>
               <span className="font-light text-gray-400 text-sm">Logo</span>
-              <span className="ml-1 px-2 py-0.5 text-xs font-semibold text-gray-600 bg-gray-100 rounded border border-gray-200">
-                BADGER RD
-              </span>
+              {technician.shop && (
+                <span className="ml-1 px-2 py-0.5 text-xs font-semibold text-gray-600 bg-gray-100 rounded border border-gray-200">
+                  {technician.shop}
+                </span>
+              )}
             </div>
             <button
               onClick={() => setIndirectModal(true)}
@@ -313,6 +323,13 @@ export default function DashboardPage() {
             <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
               {technician.name?.split(' ').map((n) => n[0]).join('').slice(0, 2) || 'AA'}
             </div>
+            <button
+              onClick={() => setLogoutModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              Logout
+            </button>
           </header>
 
           {/* Blue hero banner */}
@@ -331,119 +348,295 @@ export default function DashboardPage() {
               </div>
               <div>
                 <p className="text-blue-300 text-xs">Started At</p>
-                <p className="font-bold text-base">{CURRENT_TECHNICIAN.startedAtLabel}</p>
+                <p className="font-bold text-base">
+                  {shiftStartedAt ? new Date(shiftStartedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'}
+                </p>
               </div>
             </div>
             <div className="border-l border-blue-500 pl-6 flex flex-col items-end gap-2 shrink-0">
               <p className="text-blue-200 text-xs">Status: <span className="text-white font-medium">{currentActivity}</span></p>
               <button
-                onClick={() => setShiftActive(!shiftActive)}
+                onClick={() => {
+                  if (shiftActive) {
+                    endShift(technician.id).then(() => { setShiftActive(false); setShiftStartedAt(null); setShiftDuration(0); }).catch(() => {});
+                  } else {
+                    beginShift(technician.id, technician.shopId)
+                      .then((response) => {
+                        const data = response.data;
+                        setShiftActive(true);
+                        const startTime = data.beginTime ?? new Date().toISOString();
+                        setShiftStartedAt(startTime);
+                        setShiftDuration(Date.now() - new Date(startTime).getTime());
+                      })
+                      .catch(() => {});
+                  }
+                }}
                 className="flex items-center gap-1.5 px-4 py-2 bg-white/20 hover:bg-white/30 rounded-xl text-sm font-semibold transition-colors border border-white/30"
               >
-                {shiftActive ? (
-                  <>
-                    <Clock className="w-4 h-4" />
-                    End Shift
-                  </>
-                ) : (
-                  <>▶ Begin Shift</>
-                )}
+                {shiftActive ? <><Clock className="w-4 h-4" /> End Shift</> : <>▶ Begin Shift</>}
               </button>
             </div>
           </div>
 
-          {/* Content area */}
+          {/* Section tabs */}
+          <div className="bg-white border-b border-gray-200 px-4 flex items-center">
+            {[
+              { id: 'repairs', label: 'Repairs',         icon: Wrench  },
+              { id: 'parts',   label: 'Parts Inventory', icon: Package },
+            ].map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                onClick={() => setActiveSection(id)}
+                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors
+                  ${activeSection === id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+              >
+                <Icon className="w-4 h-4" />
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* ── Content ─────────────────────────────────────────────────── */}
           <div className="flex-1 overflow-y-auto">
-            {/* Section tabs: Repairs | Parts Inventory */}
-            <div className="bg-white border-b border-gray-200 px-4 flex items-center gap-0">
-              {[
-                { id: 'repairs', label: 'Repairs', icon: Wrench },
-                { id: 'parts',   label: 'Parts Inventory', icon: Package },
-              ].map(({ id, label, icon: Icon }) => (
-                <button
-                  key={id}
-                  onClick={() => setActiveSection(id)}
-                  className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors
-                    ${activeSection === id
-                      ? 'border-blue-600 text-blue-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700'
-                    }`}
-                >
-                  <Icon className="w-4 h-4" />
-                  {label}
-                </button>
-              ))}
-            </div>
 
             {/* ── REPAIRS ── */}
             {activeSection === 'repairs' && (
               <div className="p-4">
-                {/* Filter bar */}
-                <div className="flex items-center gap-2 mb-3">
+
+                {/* Row 1: Category + Search + Scope + New WO + New Repair */}
+                <div className="flex items-center gap-2 mb-3" onClick={(e) => e.stopPropagation()}>
+                  {/* Search field selector + input */}
+                  <div className="flex items-center flex-1 max-w-md gap-0" onClick={(e) => e.stopPropagation()}>
+                    {/* Field dropdown */}
+                    <div className="relative shrink-0">
+                      <button
+                        onClick={() => setSearchFieldOpen((o) => !o)}
+                        className="flex items-center gap-1.5 px-3 py-2 text-sm border border-r-0 border-gray-200 rounded-l-lg bg-white text-gray-600 hover:bg-gray-50 whitespace-nowrap"
+                      >
+                        {searchField}
+                        <ChevronDown className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                      </button>
+                      {searchFieldOpen && (
+                        <div className="absolute top-full left-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-20 py-1 min-w-[160px]">
+                          {['Asset Number', 'License Number', 'Work Order Id', 'Repair Id', 'VIN Code'].map((f) => (
+                            <button
+                              key={f}
+                              onClick={() => { setSearchField(f); setSearchFieldOpen(false); setSearchInput(''); setSearchValue(''); }}
+                              className="w-full flex items-center justify-between px-4 py-2.5 text-sm hover:bg-gray-50"
+                            >
+                              <span className={searchField === f ? 'font-semibold text-gray-900' : 'text-gray-700'}>{f}</span>
+                              {searchField === f && <span className="text-gray-500 text-xs">✓</span>}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {/* Input */}
+                    <div className="flex items-center border border-gray-200 rounded-r-lg overflow-hidden bg-white flex-1 focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-200 transition-all">
+                      <Search className="w-4 h-4 text-gray-400 ml-3 shrink-0" />
+                      <input
+                        type="text"
+                        placeholder={`Search by ${searchField}...`}
+                        value={searchInput}
+                        onChange={(e) => setSearchInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { setSearchValue(searchInput); setRepairsPage(1); } }}
+                        className="flex-1 px-2 py-2 text-sm outline-none bg-transparent"
+                      />
+                      {searchInput && (
+                        <button
+                          onClick={() => { setSearchInput(''); setSearchValue(''); setRepairsPage(1); }}
+                          className="px-2 py-2 text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => { setSearchValue(searchInput); setRepairsPage(1); }}
+                        className="px-2 py-2 hover:bg-gray-50 border-l border-gray-200 transition-colors"
+                      >
+                        <ArrowRight className="w-4 h-4 text-gray-400" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Scope */}
                   <select
-                    value={category}
-                    onChange={(e) => setCategory(e.target.value)}
+                    value={scope}
+                    onChange={(e) => { setScope(e.target.value); setRepairsPage(1); }}
                     className="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-300"
                   >
-                    <option value="">Select category</option>
-                    <option value="engine">Engine</option>
-                    <option value="brakes">Brakes</option>
-                    <option value="tires">Tires</option>
-                  </select>
-                  <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden bg-white flex-1 max-w-xs focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-200 transition-all">
-                    <Search className="w-4 h-4 text-gray-400 ml-3 shrink-0" />
-                    <input
-                      type="text"
-                      placeholder="Search..."
-                      value={searchText}
-                      onChange={(e) => setSearchText(e.target.value)}
-                      className="flex-1 px-2 py-2 text-sm outline-none bg-transparent"
-                    />
-                    <button className="px-2 py-2 hover:bg-gray-50 border-l border-gray-200">
-                      <ArrowRight className="w-4 h-4 text-gray-400" />
-                    </button>
-                  </div>
-                  <select className="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-300">
                     <option>My Repairs in My Shop</option>
-                    <option>All Shop Repairs</option>
+                    <option>My Repairs in All Shops</option>
+                    <option>All Repairs in My Shop</option>
+                    <option>All Repairs in All Shops</option>
                   </select>
+
                   <div className="flex-1" />
-                  <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
-                  <button className="flex items-center gap-1 text-sm text-blue-600 font-medium hover:text-blue-700">
-                    View all <ChevronRight className="w-4 h-4" />
+
+                  {/* New Work Order */}
+                  <button
+                    onClick={() => navigate('/work-orders/new', { state: { technician } })}
+                    className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    <Plus className="w-4 h-4" />
+                    New Work Order
                   </button>
+
+                  {/* New Repair — disabled for now */}
+                  {/* <button
+                    onClick={() => navigate('/work-orders/new', { state: { technician } })}
+                    className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    <Plus className="w-4 h-4" />
+                    New Repair
+                  </button> */}
                 </div>
 
-                {/* Open / Closed sub-tabs */}
-                <div className="flex items-center gap-1 mb-4">
-                  {['open', 'closed'].map((t) => (
+                {/* Row 2: Status tabs + Filter by + View toggle */}
+                <div className="flex items-center gap-2 mb-4" onClick={(e) => e.stopPropagation()}>
+                  {/* Status tabs */}
+                  {[
+                    { id: 'all',       label: 'All'       },
+                    { id: 'open',      label: 'Open'      },
+                    { id: 'completed', label: 'Completed' },
+                    { id: 'lastWO',    label: 'Last WO'   },
+                  ].map(({ id, label }) => (
                     <button
-                      key={t}
-                      onClick={() => setActiveTab(t)}
-                      className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors capitalize
-                        ${activeTab === t ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
+                      key={id}
+                      onClick={() => { setActiveTab(id); setRepairsPage(1); }}
+                      className={`px-4 py-1.5 rounded-full text-sm font-medium border transition-colors
+                        ${activeTab === id
+                          ? 'bg-gray-900 text-white border-gray-900'
+                          : 'text-gray-600 border-gray-300 hover:bg-gray-50'
+                        }`}
                     >
-                      {t.charAt(0).toUpperCase() + t.slice(1)}
-                      <span className="ml-1 text-xs opacity-70">
-                        {t === 'open' ? repairCounts.open : repairCounts.closed}
-                      </span>
+                      {label}
                     </button>
                   ))}
+
+                  <div className="flex-1" />
+
+                  {/* Filter by priority */}
+                  <div className="relative">
+                    <button
+                      onClick={() => setPriorityFilterOpen((o) => !o)}
+                      className="flex items-center gap-2 px-3 py-1.5 text-sm border border-gray-200 rounded-lg bg-white hover:bg-gray-50 transition-colors"
+                    >
+                      Filter by: <span className="font-semibold">{priorityFilter}</span>
+                      <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
+                    </button>
+                    {priorityFilterOpen && (
+                      <div className="absolute top-full right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-20 py-1 min-w-[130px]">
+                        {['All', 'URGENT', 'HIGH', 'MEDIUM', 'LOW'].map((f) => (
+                          <button
+                            key={f}
+                            onClick={() => { setPriorityFilter(f); setPriorityFilterOpen(false); setRepairsPage(1); }}
+                            className={`w-full text-left px-4 py-2 text-sm hover:bg-gray-50 capitalize ${priorityFilter === f ? 'text-blue-600 font-semibold' : 'text-gray-700'}`}
+                          >
+                            {f.charAt(0) + f.slice(1).toLowerCase()}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Grid / List toggle */}
+                  <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden bg-white">
+                    <button
+                      onClick={() => setRepairsViewMode('grid')}
+                      className={`p-2 transition-colors ${repairsViewMode === 'grid' ? 'bg-gray-100 text-gray-900' : 'text-gray-400 hover:bg-gray-50'}`}
+                    >
+                      <LayoutGrid className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => setRepairsViewMode('list')}
+                      className={`p-2 transition-colors ${repairsViewMode === 'list' ? 'bg-gray-100 text-gray-900' : 'text-gray-400 hover:bg-gray-50'}`}
+                    >
+                      <List className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
 
+                {/* Repairs content */}
                 {repairsLoading ? (
                   <EmptyState message="Loading repairs..." />
                 ) : repairsError ? (
                   <EmptyState message={repairsError} />
                 ) : repairsList.length === 0 ? (
                   <EmptyState message="No work orders currently assigned" />
-                ) : viewMode === 'grid' ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {repairsList.map((wo) => <WorkOrderCard key={wo.id} wo={wo} onOpen={openRepairDetail} />)}
+                ) : repairsViewMode === 'grid' ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {pagedRepairs.map((wo) => <WorkOrderCard key={wo.id} wo={wo} onOpen={openRepairDetail} />)}
                   </div>
                 ) : (
-                  <div className="space-y-2">
-                    {repairsList.map((wo) => <WorkOrderRow key={wo.id} wo={wo} onOpen={openRepairDetail} />)}
+                  <RepairsTable rows={pagedRepairs} onOpen={openRepairDetail} />
+                )}
+
+                {/* Repairs pagination */}
+                {repairsTotalItems > 0 && repairsTotalPages > 0 && (
+                  <div
+                    className="mt-4 flex items-center justify-between text-sm"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-gray-500 text-xs">Rows per page</span>
+                      <div className="relative">
+                        <button
+                          onClick={() => setRepairsRowsDDOpen((o) => !o)}
+                          className="flex items-center gap-1 px-2.5 py-1 border border-gray-200 rounded-lg hover:bg-gray-50 text-gray-700 text-xs"
+                        >
+                          {repairsRows}
+                          <ChevronDown className="w-3 h-3 text-gray-400" />
+                        </button>
+                        {repairsRowsDDOpen && (
+                          <div className="absolute bottom-full left-0 mb-1 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-20">
+                            {REPAIR_ROWS_OPTIONS.map((r) => (
+                              <button
+                                key={r}
+                                onClick={() => { setRepairsRows(r); setRepairsPage(1); setRepairsRowsDDOpen(false); }}
+                                className={`block w-full text-left px-4 py-2 text-xs hover:bg-gray-50 ${repairsRows === r ? 'text-blue-600 font-medium' : 'text-gray-700'}`}
+                              >
+                                {r}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <span className="text-gray-500 text-xs">
+                        Showing <span className="font-semibold text-gray-700">{repairsFrom} to {repairsTo}</span> of{' '}
+                        <span className="font-semibold text-gray-700">{repairsTotalItems}</span> entries
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setRepairsPage(Math.max(1, repairsPage - 1))}
+                        disabled={repairsPage === 1}
+                        className="px-3 py-1 text-xs border border-gray-200 rounded-lg text-blue-500 font-semibold hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed disabled:text-gray-400"
+                      >
+                        PREV
+                      </button>
+                      {buildRepairPages().map((p, i) =>
+                        p === '…'
+                          ? <span key={`e${i}`} className="px-1 text-gray-400 text-xs">...</span>
+                          : (
+                            <button
+                              key={p}
+                              onClick={() => setRepairsPage(p)}
+                              className={`w-8 h-8 rounded-lg text-xs font-semibold transition-colors
+                                ${repairsPage === p ? 'bg-blue-500 text-white' : 'border border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                            >
+                              {p}
+                            </button>
+                          )
+                      )}
+                      <button
+                        onClick={() => setRepairsPage(Math.min(repairsTotalPages, repairsPage + 1))}
+                        disabled={repairsPage === repairsTotalPages}
+                        className="px-3 py-1 text-xs border border-gray-200 rounded-lg text-blue-500 font-semibold hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed disabled:text-gray-400"
+                      >
+                        NEXT
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -452,7 +645,6 @@ export default function DashboardPage() {
             {/* ── PARTS INVENTORY ── */}
             {activeSection === 'parts' && (
               <div className="p-4">
-                {/* Summary cards */}
                 <div className="grid grid-cols-3 gap-3 mb-4">
                   {[
                     { label: 'Requested Parts', count: partsCounts.requested, icon: '📋' },
@@ -473,15 +665,11 @@ export default function DashboardPage() {
                     <p className="text-sm font-semibold text-amber-900 mb-1">Parts Messages</p>
                     <div className="space-y-1">
                       {partsMessages.slice(0, 2).map((message) => (
-                        <p key={message.messageID} className="text-xs text-amber-800">
-                          {message.messageSubject}
-                        </p>
+                        <p key={message.messageID} className="text-xs text-amber-800">{message.messageSubject}</p>
                       ))}
                     </div>
                   </div>
                 )}
-
-                {/* Sub-tabs + filter */}
                 <div className="flex items-center gap-3 mb-3">
                   <div className="flex items-center gap-1">
                     {['active', 'past'].map((t) => (
@@ -496,8 +684,6 @@ export default function DashboardPage() {
                     ))}
                   </div>
                   <div className="flex-1" />
-
-                  {/* Filter dropdown */}
                   <div className="relative" onClick={(e) => e.stopPropagation()}>
                     <button
                       onClick={() => setPartsFilterOpen(!partsFilterOpen)}
@@ -520,60 +706,78 @@ export default function DashboardPage() {
                       </div>
                     )}
                   </div>
-                  <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
+                  <div className="flex items-center gap-0 border border-gray-200 rounded-lg overflow-hidden bg-white">
+                    <button onClick={() => setViewMode('grid')} className={`p-2 transition-colors ${viewMode === 'grid' ? 'bg-gray-100 text-gray-900' : 'text-gray-400 hover:bg-gray-50'}`}><LayoutGrid className="w-4 h-4" /></button>
+                    <button onClick={() => setViewMode('list')}  className={`p-2 transition-colors ${viewMode === 'list'  ? 'bg-gray-100 text-gray-900' : 'text-gray-400 hover:bg-gray-50'}`}><List className="w-4 h-4" /></button>
+                  </div>
                 </div>
-
-                {partsLoading ? (
-                  <EmptyState message="Loading parts..." />
-                ) : partsError ? (
-                  <EmptyState message={partsError} />
-                ) : partsList.length === 0 ? (
-                  <EmptyState message="No parts requests found" />
-                ) : viewMode === 'grid' ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {partsList.map((p) => <PartCard key={p.id} part={p} />)}
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {partsList.map((p) => <PartRow key={p.id} part={p} />)}
-                  </div>
-                )}
+                {partsLoading ? <EmptyState message="Loading parts..." />
+                  : partsError ? <EmptyState message={partsError} />
+                  : partsList.length === 0 ? <EmptyState message="No parts requests found" />
+                  : viewMode === 'grid'
+                    ? <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">{partsList.map((p) => <PartCard key={p.id} part={p} />)}</div>
+                    : <div className="space-y-2">{partsList.map((p) => <PartRow key={p.id} part={p} />)}</div>
+                }
               </div>
             )}
           </div>
         </div>
       </div>
 
+      {/* Logout modal */}
+      {logoutModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-2xl shadow-2xl w-[360px] p-6">
+            <div className="flex items-start justify-between mb-3">
+              <h2 className="text-lg font-bold text-gray-900">Confirm Logging out</h2>
+              <button onClick={() => setLogoutModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors" aria-label="Close"><X className="w-5 h-5" /></button>
+            </div>
+            <p className="text-sm text-gray-500 mb-6">Are you sure you want to log out?</p>
+            <div className="flex justify-end">
+              <button
+                onClick={() => { localStorage.removeItem(activityKey); sessionStorage.removeItem('loggedInTechnician'); navigate('/'); }}
+                className="px-5 py-2 bg-blue-500 hover:bg-blue-600 text-white text-sm font-semibold rounded-lg transition-colors"
+              >
+                Log out
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Indirect Activity Modal */}
       {indirectModal && (
         <IndirectActivityModal
           onClose={() => setIndirectModal(false)}
           onSelect={(activity) => {
-            setCurrentActivity(activity);
+            const label = typeof activity === 'string'
+              ? activity
+              : (activity?.partName || activity?.description || activity?.activityName || activity?.name || activity?.activityDesc || String(activity));
+            const id = typeof activity === 'object' ? activity?.repairGroupComponentActionID : null;
+            setCurrentActivity(label);
+            localStorage.setItem(activityKey, label);
             setIndirectModal(false);
+            if (id != null) submitIndirectActivity(technician.id, id).catch(() => {});
           }}
         />
       )}
 
-      {(selectedRepair || repairDetailLoading || repairDetailError) && (
-        <RepairDetailModal
-          repair={selectedRepair}
-          loading={repairDetailLoading}
-          error={repairDetailError}
-          onClose={() => {
-            setSelectedRepair(null);
-            setRepairDetailError('');
-          }}
-        />
-      )}
-
-      {/* Nova AI Assistant */}
       <NovaAssistant
         technician={technician}
         onAction={(action) => {
           if (action.action === 'navigate') setActiveSection(action.section);
-          if (action.action === 'begin_shift') setShiftActive(true);
-          if (action.action === 'end_shift') setShiftActive(false);
+          if (action.action === 'begin_shift') {
+            beginShift(technician.id, technician.shopId)
+              .then((response) => {
+                const data = response.data;
+                setShiftActive(true);
+                const startTime = data.beginTime ?? new Date().toISOString();
+                setShiftStartedAt(startTime);
+                setShiftDuration(Date.now() - new Date(startTime).getTime());
+              })
+              .catch(() => {});
+          }
+          if (action.action === 'end_shift') endShift(technician.id).catch(() => {});
           if (action.action === 'set_indirect_activity') setCurrentActivity(action.activity);
         }}
       />
@@ -581,21 +785,143 @@ export default function DashboardPage() {
   );
 }
 
-function ViewToggle({ viewMode, setViewMode }) {
+// ── Priority badge ────────────────────────────────────────────────────────────
+function PriorityBadge({ priority }) {
+  const cfg = PRIORITY_BADGE[priority] || PRIORITY_BADGE.LOW;
+  const { bg, border, text, Icon } = cfg;
   return (
-    <div className="flex items-center gap-0 border border-gray-200 rounded-lg overflow-hidden bg-white">
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs font-bold ${bg} ${border} ${text}`}>
+      <Icon className="w-3.5 h-3.5" />
+      {priority}
+    </span>
+  );
+}
+
+// ── Priority icon (for list view) ─────────────────────────────────────────────
+function PriorityIcon({ priority }) {
+  const cfg = PRIORITY_BADGE[priority] || PRIORITY_BADGE.LOW;
+  const { text, Icon } = cfg;
+  return <Icon className={`w-5 h-5 ${text}`} />;
+}
+
+// ── Work Order Card (grid) ────────────────────────────────────────────────────
+function WorkOrderCard({ wo, onOpen }) {
+  const isResuming = wo.isOpen && wo.rawStatus === 'In Progress';
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md transition-shadow flex flex-col">
+      {/* Top: priority badge + message */}
+      <div className="flex items-center justify-between mb-3">
+        {wo.priority ? <PriorityBadge priority={wo.priority} /> : <span />}
+        <div className="relative">
+          <Mail className="w-4 h-4 text-gray-400" />
+          {wo.messageCount > 0 && (
+            <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-blue-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+              {wo.messageCount}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* WO Number + Status */}
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-gray-500">WO Number: <span className="font-semibold text-gray-800">{wo.woNumber}</span></span>
+        <span className="text-xs text-gray-500">WO Status: <span className="font-semibold text-gray-800">{wo.woStatus}</span></span>
+      </div>
+
+      {/* Title */}
+      <p className="font-bold text-gray-900 text-sm leading-snug mb-3">{wo.title}</p>
+
+      {/* Asset box */}
+      <div className="border border-gray-200 rounded-lg px-3 py-2 mb-3 bg-gray-50">
+        <p className="text-[10px] text-gray-400 mb-0.5">Asset:</p>
+        <p className="text-sm">
+          <span className="font-bold text-gray-900">{wo.asset}</span>
+          <span className="text-gray-500 ml-1.5">{wo.assetId}</span>
+        </p>
+      </div>
+
+      {/* Divider */}
+      <div className="border-t border-gray-100 mb-3" />
+
+      {/* Metadata */}
+      <div className="space-y-1.5 mb-4 flex-1">
+        {[
+          ['Repair Code', wo.repairCode],
+          ['Shop',        wo.shop],
+          ['Time Standard', wo.timeStandard],
+          ['Date In',     wo.dateIn],
+        ].map(([label, value]) => (
+          <div key={label} className="flex items-baseline gap-2 text-xs">
+            <span className="text-gray-400 w-24 shrink-0">{label}:</span>
+            <span className="font-semibold text-gray-800">{value}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Action button */}
       <button
-        onClick={() => setViewMode('grid')}
-        className={`p-2 transition-colors ${viewMode === 'grid' ? 'bg-gray-100 text-gray-900' : 'text-gray-400 hover:bg-gray-50'}`}
+        onClick={() => onOpen?.(wo.repairId)}
+        className="w-full py-2 border border-gray-200 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
       >
-        <LayoutGrid className="w-4 h-4" />
+        {isResuming ? 'Resume' : 'Begin'}
       </button>
-      <button
-        onClick={() => setViewMode('list')}
-        className={`p-2 transition-colors ${viewMode === 'list' ? 'bg-gray-100 text-gray-900' : 'text-gray-400 hover:bg-gray-50'}`}
-      >
-        <List className="w-4 h-4" />
-      </button>
+    </div>
+  );
+}
+
+// ── Repairs list table ─────────────────────────────────────────────────────────
+const LIST_COLS = ['Priority', 'Asset', 'WO Number', 'WO Status', 'Repair Code', 'Repair Description', 'Shop', 'Time Standard', 'Date In', 'Message', 'Actions'];
+
+function RepairsTable({ rows, onOpen }) {
+  return (
+    <div className="w-full overflow-x-auto bg-white border border-gray-200 rounded-xl">
+      <table className="w-full text-sm min-w-[900px]">
+        <thead>
+          <tr className="border-b border-gray-100">
+            {LIST_COLS.map((col) => (
+              <th key={col} className="text-left px-3 py-3 text-xs font-medium text-gray-400 uppercase tracking-wide whitespace-nowrap">
+                {col}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((wo, i) => {
+            const isResuming = wo.isOpen && wo.rawStatus === 'In Progress';
+            return (
+              <tr key={wo.id} className={`hover:bg-gray-50 transition-colors ${i < rows.length - 1 ? 'border-b border-gray-100' : ''}`}>
+                <td className="px-3 py-3"><PriorityIcon priority={wo.priority} /></td>
+                <td className="px-3 py-3 text-gray-700 font-medium">{wo.asset}<br /><span className="text-xs text-gray-400">{wo.assetId}</span></td>
+                <td className="px-3 py-3 text-gray-700">{wo.woNumber}</td>
+                <td className="px-3 py-3 text-gray-700">{wo.woStatus}</td>
+                <td className="px-3 py-3 text-gray-700">{wo.repairCode}</td>
+                <td className="px-3 py-3 text-gray-700 max-w-[180px] truncate">{wo.title}</td>
+                <td className="px-3 py-3 text-gray-700">{wo.shop}</td>
+                <td className="px-3 py-3 text-gray-700">{wo.timeStandard}</td>
+                <td className="px-3 py-3 text-gray-700">{wo.dateIn}</td>
+                <td className="px-3 py-3">
+                  {wo.messageCount > 0 ? (
+                    <div className="relative inline-block">
+                      <Mail className="w-4 h-4 text-gray-400" />
+                      <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-blue-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+                        {wo.messageCount}
+                      </span>
+                    </div>
+                  ) : <span className="text-gray-400">--</span>}
+                </td>
+                <td className="px-3 py-3">
+                  <button
+                    onClick={() => onOpen?.(wo.repairId)}
+                    className="px-4 py-1.5 border border-gray-200 rounded-lg text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors whitespace-nowrap"
+                  >
+                    {isResuming ? 'Resume' : 'Begin'}
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -603,119 +929,7 @@ function ViewToggle({ viewMode, setViewMode }) {
 function EmptyState({ message }) {
   return (
     <div className="flex flex-col items-center justify-center py-16 text-gray-400">
-      <div className="relative w-20 h-20 mb-4 opacity-30">
-        <div className="absolute inset-0 border-4 border-gray-300 rounded-full" />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-3xl">🔍</div>
-      </div>
       <p className="text-sm font-medium text-gray-500">{message}</p>
-    </div>
-  );
-}
-
-function WorkOrderCard({ wo, onOpen }) {
-  return (
-    <div className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md transition-shadow">
-      <div className="flex items-center gap-2 mb-3">
-        <span className={`px-2 py-0.5 text-xs font-semibold rounded border ${PRIORITY_STYLES[wo.priority]}`}>
-          {wo.priority}
-        </span>
-        <span className={`px-2 py-0.5 text-xs font-medium rounded border ${PARTS_STYLES[wo.partsStatus] || 'bg-gray-50 text-gray-500 border-gray-200'}`}>
-          {wo.partsStatus}
-        </span>
-      </div>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs text-gray-400">WO Number: <span className="font-medium text-gray-700">{wo.woNumber}</span></span>
-        <span className="text-xs text-gray-400">WO Status: <span className="font-medium text-gray-700">{wo.woStatus}</span></span>
-      </div>
-      <p className="font-semibold text-gray-900 mb-1">{wo.title}</p>
-      <div className="text-xs text-gray-500 mb-1">
-        <span className="font-medium text-gray-700 text-sm">Asset</span>
-        <span className="text-gray-400 ml-1">{wo.asset} {wo.assetId}</span>
-      </div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-gray-500 mt-2">
-        <div><span className="text-gray-400">Repair Code:</span> <span className="font-medium text-gray-700">{wo.repairCode}</span></div>
-        <div><span className="text-gray-400">Shop:</span> <span className="font-medium text-gray-700">{wo.shop}</span></div>
-        <div><span className="text-gray-400">Time Standard:</span> <span className="font-medium text-gray-700">{wo.timeStandard}</span></div>
-        <div><span className="text-gray-400">Date In:</span> <span className="font-medium text-gray-700">{wo.dateIn}</span></div>
-      </div>
-      <button
-        onClick={() => onOpen?.(wo.repairId)}
-        className="mt-3 w-full py-2 bg-gray-50 hover:bg-blue-50 hover:text-blue-700 border border-gray-200 hover:border-blue-300 rounded-lg text-sm font-medium text-gray-600 transition-colors"
-      >
-        Resume
-      </button>
-    </div>
-  );
-}
-
-function WorkOrderRow({ wo, onOpen }) {
-  return (
-    <div className="bg-white border border-gray-200 rounded-xl px-4 py-3 flex items-center gap-4 hover:shadow-sm transition-shadow">
-      <div className="flex items-center gap-2 shrink-0">
-        <span className={`px-2 py-0.5 text-xs font-semibold rounded border ${PRIORITY_STYLES[wo.priority]}`}>{wo.priority}</span>
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="font-semibold text-gray-900 text-sm">{wo.title}</p>
-        <p className="text-xs text-gray-400">WO #{wo.woNumber} · {wo.asset} {wo.assetId}</p>
-      </div>
-      <div className="text-xs text-gray-500 shrink-0">{wo.dateIn}</div>
-      <button
-        onClick={() => onOpen?.(wo.repairId)}
-        className="px-4 py-1.5 bg-gray-50 hover:bg-blue-50 hover:text-blue-700 border border-gray-200 hover:border-blue-300 rounded-lg text-xs font-medium text-gray-600 transition-colors shrink-0"
-      >
-        Resume
-      </button>
-    </div>
-  );
-}
-
-function RepairDetailModal({ repair, loading, error, onClose }) {
-  const title = repair
-    ? [repair.actionDesc, repair.groupDesc, repair.componentDesc].filter(Boolean).join(' ')
-    : 'Repair Detail';
-
-  return (
-    <div className="fixed inset-0 z-40 bg-black/30 flex items-center justify-center p-4">
-      <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
-          <div>
-            <p className="text-xs text-gray-400">Repair Detail</p>
-            <h2 className="font-bold text-gray-900">{loading ? 'Loading...' : title}</h2>
-          </div>
-          <button onClick={onClose} className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-        <div className="p-5">
-          {loading && <p className="text-sm text-gray-500">Loading repair detail...</p>}
-          {error && <p className="text-sm text-red-600">{error}</p>}
-          {repair && !loading && !error && (
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <Detail label="Repair ID" value={repair.repairId} />
-              <Detail label="WO Status" value={`${repair.workOrderStatusCode} - ${repair.workOrderStatusDesc}`} />
-              <Detail label="Asset" value={`${repair.yearMake || ''} ${repair.model || ''}`.trim()} />
-              <Detail label="Asset Number" value={repair.assetNumber} />
-              <Detail label="Priority" value={`${repair.priority} - ${repair.priorityDesc}`} />
-              <Detail label="Status" value={repair.status} />
-              <Detail label="Technician" value={repair.technicianName} />
-              <Detail label="Shop" value={`${repair.maintShop || ''} ${repair.maintShopDesc || ''}`.trim()} />
-              <Detail label="Repair Reason" value={repair.repairReasonDesc || '--'} />
-              <Detail label="Time Standard" value={repair.timeStandardHours == null ? '--' : `${repair.timeStandardHours}h`} />
-              <Detail label="Estimated Hours" value={repair.estimatedHours ?? '--'} />
-              <Detail label="Serial Number" value={repair.serialNumber} />
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Detail({ label, value }) {
-  return (
-    <div>
-      <p className="text-xs text-gray-400">{label}</p>
-      <p className="font-medium text-gray-800">{value || '--'}</p>
     </div>
   );
 }
@@ -724,9 +938,7 @@ function PartCard({ part }) {
   const style = STATUS_STYLES[part.status] || 'bg-gray-100 text-gray-500 border-gray-200';
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md transition-shadow">
-      <span className={`inline-block px-2 py-0.5 text-xs font-semibold rounded border mb-3 ${style}`}>
-        {part.status}
-      </span>
+      <span className={`inline-block px-2 py-0.5 text-xs font-semibold rounded border mb-3 ${style}`}>{part.status}</span>
       <p className="font-semibold text-gray-900 text-sm mb-0.5">{part.name || '--'}</p>
       <p className="text-xs text-gray-400 mb-3">{part.description || '--'}</p>
       <div className="space-y-1">
@@ -745,9 +957,7 @@ function PartRow({ part }) {
   const style = STATUS_STYLES[part.status] || 'bg-gray-100 text-gray-500 border-gray-200';
   return (
     <div className="bg-white border border-gray-200 rounded-xl px-4 py-3 flex items-center gap-4 hover:shadow-sm transition-shadow">
-      <span className={`inline-block px-2 py-0.5 text-xs font-semibold rounded border shrink-0 ${style}`}>
-        {part.status}
-      </span>
+      <span className={`inline-block px-2 py-0.5 text-xs font-semibold rounded border shrink-0 ${style}`}>{part.status}</span>
       <div className="flex-1 min-w-0">
         <p className="font-semibold text-gray-900 text-sm">{part.name || '--'}</p>
         <p className="text-xs text-gray-400">{part.description}</p>
