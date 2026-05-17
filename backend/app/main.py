@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, SessionLocal, Base
 import app.models  # noqa: F401 — ensures all ORM classes are registered
 
-from app.routers import shops, technicians, work_orders, shifts, lookups, tasks, notes, parts, nova, assets
+from app.routers import shops, technicians, work_orders, shifts, lookups, tasks, notes, parts, assets
 
 
 @asynccontextmanager
@@ -55,7 +55,6 @@ app.include_router(lookups.router, prefix="/api")
 app.include_router(tasks.router, prefix="/api")
 app.include_router(notes.router, prefix="/api")
 app.include_router(parts.router, prefix="/api")
-app.include_router(nova.router, prefix="/api")
 app.include_router(assets.router, prefix="/api")
 
 

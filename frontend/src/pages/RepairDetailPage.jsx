@@ -6,9 +6,15 @@ import {
   Search, X, Plus, ChevronRight,
   AlertCircle, ArrowUpCircle, MinusCircle, ArrowDownCircle,
   Calendar, Edit3, FileText, ScanLine, Clock, Mail, Info,
+  LayoutGrid, List, Eye, Download,
 } from 'lucide-react';
 import { getWorkOrderRepair, getRepairNotes, addRepairNote, getRepairTasks, getRepairTimer, startRepairTimer, completeRepair, getRepairReasons, setRepairReason, getWorkOrderStatuses, changeWorkOrderStatus } from '../api/workOrders';
-import { getRepairParts, searchPartsCatalog } from '../api/parts';
+import { getRepairParts, searchPartsCatalog, issuePartRequest } from '../api/parts';
+
+const ATTACHMENT_CATEGORIES = [
+  'ENGINE ANALYSIS', 'COOLANT ANALYSIS', 'BRAKE INSPECTION', 'TIRE ANALYSIS',
+  'ELECTRICAL DIAGNOSTIC', 'TRANSMISSION ANALYSIS', 'SUSPENSION INSPECTION', 'FLUID ANALYSIS',
+];
 
 const PRIORITY_BADGE = {
   URGENT: { bg: 'bg-red-50',   border: 'border-red-300',   text: 'text-red-600',   Icon: AlertCircle     },
@@ -89,6 +95,7 @@ export default function RepairDetailPage() {
   const [catalogResults,   setCatalogResults]   = useState([]);
   const [issueTarget,      setIssueTarget]      = useState(null);
   const [issueQty,         setIssueQty]         = useState(1);
+  const [issuing,          setIssuing]          = useState(false);
   const searchRef = useRef(null);
 
   // ── Timer state ────────────────────────────────────────────────────────────
@@ -121,6 +128,20 @@ export default function RepairDetailPage() {
   const [statuses,           setStatuses]           = useState([]);
   const [selectedStatusCode, setSelectedStatusCode] = useState(null);
   const [savingStatus,       setSavingStatus]       = useState(false);
+
+  // ── Attachments state ─────────────────────────────────────────────────────
+  const [attachments, setAttachments] = useState([
+    { id: 1, fileName: 'hydraulic_pump_damage.jpg', fileSize: '2.4 Mb', attachedTo: 'Work Order', attachedBy: 'Marcus Johnson', attachedOn: 'Feb 18, 12:30 PM', category: 'ENGINE ANALYSIS', keywords: 'Hydraulic, Pump', description: 'Damage found on hydraulic pump during inspection.', fileType: 'image' },
+    { id: 2, fileName: 'hydraulic_pump_damage.jpg', fileSize: '2.4 Mb', attachedTo: 'Work Order', attachedBy: 'Marcus Johnson', attachedOn: 'Feb 18, 12:30 PM', category: 'ENGINE ANALYSIS', keywords: 'Hydraulic, Pump', description: 'Secondary damage photo.', fileType: 'image' },
+    { id: 3, fileName: 'hydraulic_pump_damage.jpg', fileSize: '2.4 Mb', attachedTo: 'Asset', attachedBy: 'Marcus Johnson', attachedOn: 'Feb 18, 12:30 PM', category: 'COOLANT ANALYSIS', keywords: 'Coolant, Corrosion', description: 'Coolant corrosion on asset body.', fileType: 'image' },
+    { id: 4, fileName: 'hydraulic_pump_damage.jpg', fileSize: '2.4 Mb', attachedTo: 'Asset', attachedBy: 'Marcus Johnson', attachedOn: 'Feb 18, 12:30 PM', category: 'COOLANT ANALYSIS', keywords: 'Coolant', description: '', fileType: 'image' },
+  ]);
+  const [attachmentSearch,       setAttachmentSearch]       = useState('');
+  const [attachmentView,         setAttachmentView]         = useState('grid');
+  const [attachmentFilter,       setAttachmentFilter]       = useState('all');
+  const [showAddAttachmentModal, setShowAddAttachmentModal] = useState(false);
+  const [editingAttachment,      setEditingAttachment]      = useState(null);
+  const [viewingAttachment,      setViewingAttachment]      = useState(null);
 
   // ── Fetch repair ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -317,6 +338,13 @@ export default function RepairDetailPage() {
   const filteredNotes = notes.filter((n) => {
     if (notesFilter === 'wo'     && !n.isWorkOrder) return false;
     if (notesFilter === 'repair' &&  n.isWorkOrder) return false;
+    return true;
+  });
+
+  const filteredAttachments = attachments.filter((a) => {
+    if (attachmentFilter === 'wo'    && a.attachedTo !== 'Work Order') return false;
+    if (attachmentFilter === 'asset' && a.attachedTo !== 'Asset')      return false;
+    if (attachmentSearch.trim() && !a.fileName.toLowerCase().includes(attachmentSearch.trim().toLowerCase())) return false;
     return true;
   });
 
@@ -536,7 +564,7 @@ export default function RepairDetailPage() {
                   </div>
 
                   {/* Search row */}
-                  <div className="relative mb-4" ref={searchRef}>
+                  <div className="mb-3" ref={searchRef}>
                     <div className="flex items-center gap-2">
                       <div className="flex-1 flex items-center border border-gray-200 rounded-lg overflow-hidden bg-white focus-within:border-blue-400 transition-colors">
                         <Search className="w-4 h-4 text-gray-400 ml-3 shrink-0" />
@@ -555,39 +583,39 @@ export default function RepairDetailPage() {
                         <ScanLine className="w-5 h-5 text-gray-500" />
                       </button>
                     </div>
-
-                    {/* Search results dropdown */}
-                    {partSearch.trim() && searchResults.length > 0 && (
-                      <div className="absolute left-0 right-12 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-20 overflow-hidden">
-                        {searchResults.map((part, i) => (
-                          <div
-                            key={part.partId + i}
-                            className="flex items-center gap-3 px-4 py-3 border-b border-gray-100 last:border-0"
-                          >
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className="px-2 py-0.5 text-xs font-medium border border-gray-300 rounded text-gray-700 shrink-0">
-                                  {part.partId}
-                                </span>
-                                <span className="flex items-center gap-1 text-xs text-green-600">
-                                  <span className="w-1.5 h-1.5 bg-green-500 rounded-full shrink-0" />
-                                  In Stock ({part.availableQty} available)
-                                </span>
-                              </div>
-                              <p className="font-semibold text-sm text-gray-900">{part.name}</p>
-                              <p className="text-xs text-gray-400">{part.description}</p>
-                            </div>
-                            <button
-                              onClick={() => { setIssueTarget(part); setIssueQty(1); }}
-                              className="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors shrink-0"
-                            >
-                              Issue Part
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
                   </div>
+
+                  {/* Inline search results */}
+                  {partSearch.trim() && searchResults.length > 0 && (
+                    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden mb-4">
+                      {searchResults.map((part, i) => (
+                        <div
+                          key={part.partId + i}
+                          className="flex items-center gap-3 px-4 py-3 border-b border-gray-100 last:border-0"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="px-2 py-0.5 text-xs font-medium border border-gray-300 rounded text-gray-700 shrink-0">
+                                {part.partId}
+                              </span>
+                              <span className="flex items-center gap-1 text-xs text-green-600">
+                                <span className="w-1.5 h-1.5 bg-green-500 rounded-full shrink-0" />
+                                In Stock ({part.availableQty} available)
+                              </span>
+                            </div>
+                            <p className="font-semibold text-sm text-gray-900">{part.name}</p>
+                            <p className="text-xs text-gray-400">{part.description}</p>
+                          </div>
+                          <button
+                            onClick={() => { setIssueTarget(part); setIssueQty(1); }}
+                            className="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors shrink-0"
+                          >
+                            Request Part
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   {/* Parts History + Messages (only when no active search) */}
                   {!partSearch.trim() && (
@@ -678,7 +706,123 @@ export default function RepairDetailPage() {
               )}
 
               {activeTab === 'attachments' && (
-                <div className="py-12 text-center text-gray-400 text-sm">No attachments</div>
+                <div>
+                  {/* Header */}
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="font-bold text-gray-900 text-base">Attachments</h3>
+                    <button
+                      onClick={() => setShowAddAttachmentModal(true)}
+                      className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Add new attachment
+                    </button>
+                  </div>
+
+                  {/* Search + view toggle */}
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="flex-1 flex items-center border border-gray-200 rounded-lg overflow-hidden bg-white focus-within:border-blue-400 transition-colors">
+                      <Search className="w-4 h-4 text-gray-400 ml-3 shrink-0" />
+                      <input
+                        type="text"
+                        placeholder="Search attachments..."
+                        value={attachmentSearch}
+                        onChange={(e) => setAttachmentSearch(e.target.value)}
+                        className="flex-1 px-2 py-2.5 text-sm outline-none bg-transparent"
+                      />
+                      <button className="px-3 py-2.5 border-l border-gray-200 hover:bg-gray-50 transition-colors">
+                        <ChevronRight className="w-4 h-4 text-gray-400" />
+                      </button>
+                    </div>
+                    <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden bg-white">
+                      <button
+                        onClick={() => setAttachmentView('grid')}
+                        className={`p-2.5 transition-colors ${attachmentView === 'grid' ? 'bg-gray-100 text-gray-800' : 'text-gray-400 hover:bg-gray-50'}`}
+                      >
+                        <LayoutGrid className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => setAttachmentView('list')}
+                        className={`p-2.5 transition-colors ${attachmentView === 'list' ? 'bg-gray-100 text-gray-800' : 'text-gray-400 hover:bg-gray-50'}`}
+                      >
+                        <List className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Filter tabs */}
+                  <div className="flex items-center gap-2 mb-5">
+                    {[
+                      { id: 'all',   label: 'All Attachments' },
+                      { id: 'wo',    label: `Work Order (WO-${woNumber})` },
+                      { id: 'asset', label: `Asset (${repair?.assetNumber || '--'})` },
+                    ].map(({ id, label }) => (
+                      <button
+                        key={id}
+                        onClick={() => setAttachmentFilter(id)}
+                        className={`px-3 py-1.5 text-sm rounded-lg transition-colors
+                          ${attachmentFilter === id
+                            ? 'border border-gray-300 bg-white text-gray-800 font-medium'
+                            : 'text-gray-500 hover:bg-gray-100'
+                          }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Content */}
+                  {filteredAttachments.length === 0 ? (
+                    <div className="py-12 text-center text-gray-400 text-sm">No attachments found</div>
+                  ) : attachmentView === 'grid' ? (
+                    <div className="grid grid-cols-2 gap-4">
+                      {filteredAttachments.map((att) => (
+                        <AttachmentGridCard
+                          key={att.id}
+                          attachment={att}
+                          onEdit={() => setEditingAttachment(att)}
+                          onView={() => setViewingAttachment(att)}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="border-b border-gray-100 bg-gray-50">
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500">Attachment Name</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500">Attached To</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500">Attached By</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500">Attached On</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500">Attachment Size</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredAttachments.map((att) => (
+                            <tr key={att.id} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">
+                              <td className="px-4 py-3 text-sm font-medium text-gray-900 max-w-[140px] truncate">{att.fileName}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600">{att.attachedTo}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600">{att.attachedBy}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600">{att.attachedOn}</td>
+                              <td className="px-4 py-3 text-sm text-gray-600">{att.fileSize}</td>
+                              <td className="px-4 py-3">
+                                <div className="flex items-center gap-1.5">
+                                  <button onClick={() => setEditingAttachment(att)} className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors" title="Edit">
+                                    <Edit3 className="w-4 h-4" />
+                                  </button>
+                                  <button onClick={() => setViewingAttachment(att)} className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors" title="View">
+                                    <Eye className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
 
@@ -811,7 +955,49 @@ export default function RepairDetailPage() {
           qty={issueQty}
           onQtyChange={setIssueQty}
           onClose={() => setIssueTarget(null)}
-          onConfirm={() => setIssueTarget(null)}
+          submitting={issuing}
+          onConfirm={() => {
+            setIssuing(true);
+            issuePartRequest({
+              repairId: Number(repairId),
+              partId: issueTarget.partId,
+              technicianId: technician?.id,
+              requestedQty: issueQty,
+              requestPartStatusID: 1,
+            })
+              .then(() => {
+                setIssueTarget(null);
+                setToast({ type: 'success', message: 'Part Requested Successfully' });
+                setTimeout(() => setToast(null), 4000);
+              })
+              .catch(() => {
+                setIssueTarget(null);
+                setToast({ type: 'error', message: 'Failed to request part. Please try again' });
+                setTimeout(() => setToast(null), 4000);
+              })
+              .finally(() => setIssuing(false));
+          }}
+          onIssue={() => {
+            setIssuing(true);
+            issuePartRequest({
+              repairId: Number(repairId),
+              partId: issueTarget.partId,
+              technicianId: technician?.id,
+              requestedQty: issueQty,
+              requestPartStatusID: 2,
+            })
+              .then(() => {
+                setIssueTarget(null);
+                setToast({ type: 'success', message: 'Part Issued Successfully' });
+                setTimeout(() => setToast(null), 4000);
+              })
+              .catch(() => {
+                setIssueTarget(null);
+                setToast({ type: 'error', message: 'Failed to issue part. Please try again' });
+                setTimeout(() => setToast(null), 4000);
+              })
+              .finally(() => setIssuing(false));
+          }}
         />
       )}
 
@@ -831,7 +1017,7 @@ export default function RepairDetailPage() {
               .then(() => {
                 setRepair((prev) => prev ? { ...prev, repairReasonId: selectedReasonId, repairReasonDesc: reasons.find((r) => r.repairReasonId === selectedReasonId)?.reason || prev.repairReasonDesc } : prev);
                 setShowReasonModal(false);
-                setToast('Repair Reason Successfully Updated.');
+                setToast({ type: 'success', message: 'Repair Reason Successfully Updated.' });
                 setTimeout(() => setToast(null), 4000);
               })
               .catch(() => {})
@@ -861,7 +1047,7 @@ export default function RepairDetailPage() {
                   workOrderStatusDesc: matched?.statusDesc || selectedStatusCode,
                 } : prev);
                 setShowStatusModal(false);
-                setToast('Work Order Status Successfully Updated.');
+                setToast({ type: 'success', message: 'Work Order Status Successfully Updated.' });
                 setTimeout(() => setToast(null), 4000);
               })
               .catch(() => {})
@@ -870,9 +1056,47 @@ export default function RepairDetailPage() {
         />
       )}
 
+      {/* Add Attachment modal */}
+      {showAddAttachmentModal && (
+        <AddAttachmentModal
+          woNumber={woNumber}
+          assetNumber={repair?.assetNumber || '--'}
+          technicianName={technician?.name || 'Technician'}
+          onClose={() => setShowAddAttachmentModal(false)}
+          onSuccess={(newAtt) => {
+            setAttachments((prev) => [newAtt, ...prev]);
+            setToast({ type: 'success', message: 'Attachment Added Successfully' });
+            setTimeout(() => setToast(null), 4000);
+          }}
+        />
+      )}
+
+      {/* Edit Attachment modal */}
+      {editingAttachment && (
+        <EditAttachmentModal
+          attachment={editingAttachment}
+          onClose={() => setEditingAttachment(null)}
+          onSave={(updated) => {
+            setAttachments((prev) => prev.map((a) => a.id === updated.id ? updated : a));
+            setEditingAttachment(null);
+            setToast({ type: 'success', message: 'Attachment Updated Successfully' });
+            setTimeout(() => setToast(null), 4000);
+          }}
+        />
+      )}
+
+      {/* View Attachment modal */}
+      {viewingAttachment && (
+        <ViewAttachmentModal
+          attachment={viewingAttachment}
+          onClose={() => setViewingAttachment(null)}
+          onEdit={(att) => { setViewingAttachment(null); setEditingAttachment(att); }}
+        />
+      )}
+
       {/* Toast */}
       {toast && (
-        <Toast message={toast} onDismiss={() => setToast(null)} />
+        <Toast type={toast.type} message={toast.message} onDismiss={() => setToast(null)} />
       )}
 
       {/* Add Note modal */}
@@ -884,7 +1108,7 @@ export default function RepairDetailPage() {
           onClose={() => setShowAddNoteModal(false)}
           onSuccess={() => {
             fetchNotes(notesSearchQuery);
-            setToast('Note added successfully.');
+            setToast({ type: 'success', message: 'Note added successfully.' });
             setTimeout(() => setToast(null), 4000);
           }}
         />
@@ -1160,12 +1384,12 @@ function ConfirmModal({ title, message, onClose, onConfirm }) {
   );
 }
 
-function IssuePartModal({ part, qty, onQtyChange, onClose, onConfirm }) {
+function IssuePartModal({ part, qty, onQtyChange, onClose, onConfirm, onIssue, submitting }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
       <div className="bg-white rounded-2xl shadow-2xl w-[480px] p-6">
         <div className="flex items-start justify-between mb-4">
-          <h2 className="text-lg font-bold text-gray-900">Issue Part</h2>
+          <h2 className="text-lg font-bold text-gray-900">Request Part</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors" aria-label="Close">
             <X className="w-5 h-5" />
           </button>
@@ -1177,7 +1401,7 @@ function IssuePartModal({ part, qty, onQtyChange, onClose, onConfirm }) {
             <span className="px-2 py-0.5 text-xs font-medium border border-gray-300 rounded text-gray-700">{part.partId}</span>
             <span className="flex items-center gap-1.5 text-xs text-green-600">
               <span className="w-1.5 h-1.5 bg-green-500 rounded-full" />
-              In Stock ({part.availableQty} available)
+              In stock ({part.availableQty} available)
             </span>
           </div>
           <p className="font-bold text-gray-900 text-base">{part.name}</p>
@@ -1206,15 +1430,23 @@ function IssuePartModal({ part, qty, onQtyChange, onClose, onConfirm }) {
 
         {/* Info box */}
         <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 mb-6 text-xs text-gray-600 leading-relaxed">
-          This part will be added to your parts history and submitted to the inventory team for processing.
+          This part will be added to your request and submitted to the inventory team for processing.
         </div>
 
-        <div className="flex justify-end">
+        <div className="flex flex-col gap-2">
           <button
             onClick={onConfirm}
-            className="px-6 py-2.5 bg-blue-500 hover:bg-blue-600 text-white text-sm font-semibold rounded-lg transition-colors"
+            disabled={submitting}
+            className="w-full py-2.5 bg-blue-500 hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-colors"
           >
-            Confirm &amp; Issue Part
+            {submitting ? 'Requesting...' : 'Confirm & Request Part'}
+          </button>
+          <button
+            onClick={onIssue}
+            disabled={submitting}
+            className="w-full py-2.5 border border-gray-300 text-gray-700 text-sm font-semibold rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            Issue Part
           </button>
         </div>
       </div>
@@ -1349,12 +1581,491 @@ function ChangeStatusModal({ currentStatusDesc, statuses, selectedCode, onSelect
   );
 }
 
-function Toast({ message, onDismiss }) {
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function UploadCloudIcon({ className }) {
   return (
-    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-3 bg-green-600 text-white text-sm font-medium px-4 py-3 rounded-xl shadow-lg">
-      <CheckCircleIcon className="w-4 h-4 shrink-0" />
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="16 16 12 12 8 16" />
+      <line x1="12" y1="12" x2="12" y2="21" />
+      <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
+    </svg>
+  );
+}
+
+function AttachmentGridCard({ attachment, onEdit, onView }) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-4">
+      <div className="flex items-start gap-3 mb-3">
+        <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center shrink-0">
+          <FileText className="w-5 h-5 text-gray-400" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-gray-900 truncate">{attachment.fileName}</p>
+          <p className="text-xs text-gray-400 mt-0.5">{attachment.attachedTo}&nbsp;&nbsp;{attachment.fileSize}</p>
+        </div>
+      </div>
+      <p className="text-xs text-gray-500 mb-0.5">
+        <span className="text-gray-400">Attached By: </span>{attachment.attachedBy}
+      </p>
+      <p className="text-xs text-gray-500 mb-3">
+        <span className="text-gray-400">Attached On: </span>{attachment.attachedOn}
+      </p>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={onEdit}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+        >
+          <Edit3 className="w-3.5 h-3.5" />
+          Edit
+        </button>
+        <button
+          onClick={onView}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+        >
+          <Eye className="w-3.5 h-3.5" />
+          View
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AddAttachmentModal({ woNumber, assetNumber, technicianName, onClose, onSuccess }) {
+  const [applyTo,      setApplyTo]      = useState('asset');
+  const [category,     setCategory]     = useState('');
+  const [keywords,     setKeywords]     = useState('');
+  const [description,  setDescription]  = useState('');
+  const [uploadState,  setUploadState]  = useState('idle'); // idle | uploading | done
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadedFile, setUploadedFile] = useState(null);
+  const [isDragging,   setIsDragging]   = useState(false);
+  const fileInputRef = useRef(null);
+
+  const now = new Date();
+  const attachmentDate =
+    now.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ', ' +
+    now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  const simulateUpload = (file) => {
+    setUploadState('uploading');
+    setUploadProgress(0);
+    const interval = setInterval(() => {
+      setUploadProgress((prev) => {
+        if (prev >= 100) {
+          clearInterval(interval);
+          setUploadState('done');
+          setUploadedFile({ name: file.name, size: formatFileSize(file.size) });
+          return 100;
+        }
+        return prev + 8;
+      });
+    }, 80);
+  };
+
+  const handleFileSelect = (file) => { if (file) simulateUpload(file); };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleFileSelect(file);
+  };
+
+  const canSave = uploadState === 'done' && !!category;
+
+  const buildAttachment = () => ({
+    id: Date.now(),
+    fileName: uploadedFile?.name || 'attachment',
+    fileSize: uploadedFile?.size || '--',
+    attachedTo: applyTo === 'wo' ? 'Work Order' : 'Asset',
+    attachedBy: technicianName,
+    attachedOn: attachmentDate,
+    category,
+    keywords,
+    description,
+    fileType: 'document',
+  });
+
+  const handleSave = (addNew = false) => {
+    onSuccess(buildAttachment());
+    if (addNew) {
+      setCategory(''); setKeywords(''); setDescription('');
+      setUploadState('idle'); setUploadedFile(null);
+    } else {
+      onClose();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-2xl shadow-2xl w-[620px] max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 pt-6 pb-4">
+          <h2 className="text-lg font-bold text-gray-900">Add New Attachment</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="px-6 pb-6 space-y-4">
+          {/* Apply to */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">Apply New Attachment To:</p>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { id: 'wo',    label: 'Work Order', sub: woNumber },
+                { id: 'asset', label: 'Asset',      sub: assetNumber },
+              ].map(({ id, label, sub }) => (
+                <label
+                  key={id}
+                  className={`flex items-center gap-3 px-4 py-3 border rounded-xl cursor-pointer transition-colors
+                    ${applyTo === id ? 'border-blue-400 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'}`}
+                >
+                  <input
+                    type="radio"
+                    name="applyTo"
+                    value={id}
+                    checked={applyTo === id}
+                    onChange={() => setApplyTo(id)}
+                    className="accent-blue-600"
+                  />
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900">{label}</p>
+                    <p className="text-xs text-gray-500">{sub}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Category + Keywords */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                Category <span className="text-red-500">*</span>
+              </label>
+              <div className="relative">
+                <select
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg outline-none focus:border-blue-400 bg-white appearance-none pr-8 transition-colors"
+                >
+                  <option value="">Select Category</option>
+                  {ATTACHMENT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 rotate-90 pointer-events-none" />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Keywords</label>
+              <input
+                type="text"
+                value={keywords}
+                onChange={(e) => setKeywords(e.target.value)}
+                placeholder="Add keywords"
+                className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg outline-none focus:border-blue-400 transition-colors"
+              />
+            </div>
+          </div>
+
+          {/* Description */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Description</label>
+            <textarea
+              rows={2}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Add description"
+              className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg outline-none focus:border-blue-400 resize-none transition-colors"
+            />
+          </div>
+
+          {/* Drop zone */}
+          <div
+            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={handleDrop}
+            className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors
+              ${isDragging ? 'border-blue-400 bg-blue-50' : 'border-gray-200 bg-gray-50'}`}
+          >
+            <div className="flex flex-col items-center gap-2">
+              <UploadCloudIcon className="w-8 h-8 text-gray-400" />
+              <p className="text-sm font-medium text-gray-700">Drop files here or click to upload</p>
+              <p className="text-xs text-gray-400">Photos (JPG, PNG), PDFs, or documents up to 10MB each</p>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="mt-1 px-5 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 transition-colors"
+              >
+                Choose File
+              </button>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              accept=".jpg,.jpeg,.png,.pdf,.doc,.docx"
+              onChange={(e) => handleFileSelect(e.target.files?.[0])}
+            />
+          </div>
+
+          {/* Upload progress */}
+          {uploadState === 'uploading' && (
+            <div className="border border-gray-200 rounded-xl px-4 py-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-gray-700">
+                  Uploading... {uploadProgress}%{' '}
+                  <span className="text-gray-400">• {Math.max(1, Math.ceil((100 - uploadProgress) * 0.3))} seconds remaining</span>
+                </span>
+                <button onClick={() => { setUploadState('idle'); setUploadProgress(0); }} className="text-gray-400 hover:text-gray-600">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                <div className="h-full bg-blue-500 rounded-full transition-all duration-100" style={{ width: `${uploadProgress}%` }} />
+              </div>
+            </div>
+          )}
+
+          {/* Uploaded file */}
+          {uploadState === 'done' && uploadedFile && (
+            <div className="flex items-center gap-3 border border-gray-200 rounded-xl px-4 py-3">
+              <FileText className="w-5 h-5 text-gray-400 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-900 truncate">{uploadedFile.name}</p>
+                <p className="text-xs text-gray-400">{uploadedFile.size}</p>
+              </div>
+              <button onClick={() => { setUploadState('idle'); setUploadedFile(null); }} className="text-gray-400 hover:text-gray-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Attachment Log */}
+          <div className="bg-gray-50 border border-gray-100 rounded-xl px-4 py-3">
+            <p className="text-sm font-semibold text-gray-700 mb-1.5">Attachment Log</p>
+            <div className="flex items-center gap-6 text-sm flex-wrap">
+              <span className="text-gray-500">Attached By: <span className="font-medium text-gray-800">{technicianName}</span></span>
+              <span className="text-gray-500">Attached Date: <span className="font-medium text-gray-800">{attachmentDate}</span></span>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-end gap-3">
+            {uploadState === 'done' && (
+              <button
+                onClick={() => handleSave(true)}
+                className="px-4 py-2.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Save & Add New Attachment
+              </button>
+            )}
+            <button
+              disabled={!canSave}
+              onClick={() => handleSave(false)}
+              className={`px-5 py-2.5 text-sm font-semibold rounded-lg transition-colors
+                ${canSave
+                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                  : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                }`}
+            >
+              Save Attachment
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditAttachmentModal({ attachment, onClose, onSave }) {
+  const [category,    setCategory]    = useState(attachment?.category    || '');
+  const [keywords,    setKeywords]    = useState(attachment?.keywords    || '');
+  const [description, setDescription] = useState(attachment?.description || '');
+  const [isDragging,  setIsDragging]  = useState(false);
+  const fileInputRef = useRef(null);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-2xl shadow-2xl w-[620px] max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 pt-6 pb-4">
+          <h2 className="text-lg font-bold text-gray-900">Edit Asset Attachment</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="px-6 pb-6 space-y-4">
+          {/* Category + Keywords */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Category</label>
+              <div className="relative">
+                <select
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg outline-none focus:border-blue-400 bg-white appearance-none pr-8 transition-colors"
+                >
+                  <option value="">Select Category</option>
+                  {ATTACHMENT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 rotate-90 pointer-events-none" />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Keywords</label>
+              <input
+                type="text"
+                value={keywords}
+                onChange={(e) => setKeywords(e.target.value)}
+                placeholder="Add keywords"
+                className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg outline-none focus:border-blue-400 transition-colors"
+              />
+            </div>
+          </div>
+
+          {/* Description */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Description</label>
+            <textarea
+              rows={2}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Add description"
+              className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg outline-none focus:border-blue-400 resize-none transition-colors"
+            />
+          </div>
+
+          {/* Drop zone */}
+          <div
+            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={(e) => { e.preventDefault(); setIsDragging(false); }}
+            className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors
+              ${isDragging ? 'border-blue-400 bg-blue-50' : 'border-gray-200 bg-gray-50'}`}
+          >
+            <div className="flex flex-col items-center gap-2">
+              <UploadCloudIcon className="w-8 h-8 text-gray-400" />
+              <p className="text-sm font-medium text-gray-700">Drop files here or click to upload</p>
+              <p className="text-xs text-gray-400">Photos (JPG, PNG), PDFs, or documents up to 10MB each</p>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="mt-1 px-5 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 transition-colors"
+              >
+                Choose File
+              </button>
+            </div>
+            <input ref={fileInputRef} type="file" className="hidden" accept=".jpg,.jpeg,.png,.pdf,.doc,.docx" />
+          </div>
+
+          {/* Attachment Log */}
+          <div className="bg-gray-50 border border-gray-100 rounded-xl px-4 py-3">
+            <p className="text-sm font-semibold text-gray-700 mb-1.5">Attachment Log</p>
+            <div className="flex items-center gap-4 text-sm flex-wrap">
+              <span className="text-gray-500">Attached By: <span className="font-medium text-gray-800">{attachment?.attachedBy}</span></span>
+              <span className="text-gray-500">Attached Date: <span className="font-medium text-gray-800">{attachment?.attachedOn}</span></span>
+              <span className="text-gray-500">File Name: <span className="font-medium text-gray-800">{attachment?.fileName}</span></span>
+              <span className="text-gray-500">File Size: <span className="font-medium text-gray-800">{attachment?.fileSize}</span></span>
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <button
+              onClick={() => onSave({ ...attachment, category, keywords, description })}
+              className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors"
+            >
+              Save Attachment
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ViewAttachmentModal({ attachment, onClose, onEdit }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-2xl shadow-2xl w-[540px]">
+        <div className="flex items-center justify-between px-6 pt-6 pb-4">
+          <h2 className="text-lg font-bold text-gray-900">View Asset Attachment</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="px-6 pb-6 space-y-4">
+          {/* Category + Keywords */}
+          <div className="grid grid-cols-2 gap-6">
+            <div>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Category</p>
+              <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+                <span className="text-sm text-gray-900">{attachment?.category || '--'}</span>
+                <ChevronRight className="w-4 h-4 text-gray-300 rotate-90" />
+              </div>
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Keywords</p>
+              <span className="text-sm text-gray-900">{attachment?.keywords || '--'}</span>
+            </div>
+          </div>
+
+          {/* Description */}
+          <div>
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Description</p>
+            <p className="text-sm text-gray-900">{attachment?.description || '--'}</p>
+          </div>
+
+          {/* Attachment Log */}
+          <div className="bg-gray-50 border border-gray-100 rounded-xl px-4 py-3">
+            <p className="text-sm font-semibold text-gray-700 mb-1.5">Attachment Log</p>
+            <div className="flex items-center gap-3 text-sm flex-wrap">
+              <span className="text-gray-500">Attached By: <span className="font-medium text-gray-800">{attachment?.attachedBy}</span></span>
+              <span className="text-gray-500">Attached Date: <span className="font-medium text-gray-800">{attachment?.attachedOn}</span></span>
+              <span className="text-gray-500">File Name: <span className="font-medium text-gray-800">{attachment?.fileName}</span></span>
+              <span className="text-gray-500">File Size: <span className="font-medium text-gray-800">{attachment?.fileSize}</span></span>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-between">
+            <button
+              onClick={() => onEdit(attachment)}
+              className="flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              <Edit3 className="w-4 h-4" />
+              Edit attachment
+            </button>
+            <button className="flex items-center gap-1.5 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors">
+              <Download className="w-4 h-4" />
+              Download
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Toast({ type = 'success', message, onDismiss }) {
+  const isError = type === 'error';
+  return (
+    <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-3 text-sm font-medium px-4 py-3 rounded-xl shadow-lg
+      ${isError ? 'bg-red-50 border border-red-200 text-red-700' : 'bg-green-600 text-white'}`}>
+      {isError
+        ? <AlertCircle className="w-4 h-4 shrink-0 text-red-500" />
+        : <CheckCircleIcon className="w-4 h-4 shrink-0" />
+      }
       <span>{message}</span>
-      <button onClick={onDismiss} className="text-white/80 hover:text-white transition-colors ml-1">
+      <button
+        onClick={onDismiss}
+        className={`transition-colors ml-1 ${isError ? 'text-red-400 hover:text-red-600' : 'text-white/80 hover:text-white'}`}
+      >
         <X className="w-4 h-4" />
       </button>
     </div>

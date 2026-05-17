@@ -5,8 +5,8 @@ from typing import Optional
 
 from app.database import get_db
 from app.models.work_order import WorkOrderNote, WorkOrderRepair
-from app.models.technician import Technician
 from app.schemas.work_order import NoteOut, NoteCreateIn
+from app.services import notes as notes_service
 
 router = APIRouter(prefix="/workordernotes", tags=["notes"])
 
@@ -69,24 +69,20 @@ def get_notes(
 
 @router.post("", status_code=201)
 def add_note(payload: NoteCreateIn, db: Session = Depends(get_db)):
-    user_name = ""
-    if payload.createdTechnicianID:
-        tech = db.query(Technician).filter(Technician.id == payload.createdTechnicianID).first()
-        if tech:
-            parts = tech.name.split()
-            user_name = f"{parts[0]}.{parts[-1][0]}" if len(parts) >= 2 else tech.name
-
-    note = WorkOrderNote(
-        document_id=payload.id if payload.isDocument else None,
-        repair_id=payload.id if not payload.isDocument else None,
-        subject=payload.subject,
-        note=payload.note,
-        is_work_order=payload.isDocument,
-        user_name=user_name,
-        created_user_id=payload.createdUserID,
-        created_technician_id=payload.createdTechnicianID,
-    )
-    db.add(note)
-    db.commit()
-    db.refresh(note)
+    if payload.isDocument:
+        note = notes_service.add_document_note(
+            db,
+            document_id=payload.id,
+            note_text=payload.note,
+            subject=payload.subject,
+            technician_id=payload.createdTechnicianID,
+        )
+    else:
+        note = notes_service.add_repair_note(
+            db,
+            repair_id=payload.id,
+            note_text=payload.note,
+            subject=payload.subject,
+            technician_id=payload.createdTechnicianID,
+        )
     return _envelope(note.id, "Successfully added a note.")

@@ -1,0 +1,13 @@
+# Nova service shares the main backend venv.
+# All dependencies are already installed there:
+#   source backend/.venv/bin/activate
+#
+# If running in isolation, install these:
+fastapi
+uvicorn[standard]
+google-genai
+httpx
+certifi
+python-dotenv
+pydantic-settings
+python-multipart

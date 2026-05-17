@@ -39,3 +39,7 @@ export function getPartsMessages({
 export function searchPartsCatalog({ q, pageNumber = 1, pageSize = 20 } = {}) {
   return api.get('/parts/catalog', { params: { q, pageNumber, pageSize } });
 }
+
+export function issuePartRequest({ repairId, partId, technicianId, requestedQty, requestPartStatusID = 1 } = {}) {
+  return api.post('/PartList', { repairId, partId, technicianId, requestedQty, requestPartStatusID });
+}

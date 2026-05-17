@@ -1,25 +1,21 @@
 import asyncio
 import base64
 import json
-import os
 import ssl
 import certifi
 from datetime import datetime, timezone
-
-_SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 from typing import Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
+import httpx
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Form
 from google import genai
 from google.genai import types
 
-from app.database import SessionLocal
-from app.models.work_order import WorkOrderRepair, WorkOrderNote, Task
-from app.models.part import Part
-from app.models.shift import Shift
-from app.models.technician import Technician
+from app.config import settings
 
-router = APIRouter(prefix="/nova", tags=["nova"])
+_SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+
+router = APIRouter(tags=["nova"])
 
 GEMINI_MODEL = "gemini-3.1-flash-live-preview"
 PCM_SAMPLE_RATE = 16000
@@ -64,42 +60,40 @@ EXAMPLES:
 """
 
 
-def _build_system_prompt(tech: Optional[Technician]) -> str:
+def _build_system_prompt(tech: Optional[dict]) -> str:
     if not tech:
         return BASE_SYSTEM_PROMPT
     lines = [
         BASE_SYSTEM_PROMPT,
         f"\nCURRENT SESSION:",
-        f"- Technician: {tech.name} (ID: {tech.id})",
-        f"- Role: {tech.role or 'Technician'}",
-        f"- Shop ID: {tech.shop_id}",
+        f"- Technician: {tech.get('name', '')} (ID: {tech.get('id', '')})",
+        f"- Role: {tech.get('role', 'Technician')}",
+        f"- Shop ID: {tech.get('shopId', '')}",
     ]
-    if tech.shop:
-        lines.append(f"- Shop: {tech.shop.name}")
+    if tech.get("shopName"):
+        lines.append(f"- Shop: {tech['shopName']}")
     return "\n".join(lines)
 
 
-def _make_client() -> genai.Client:
-    api_key = os.environ.get("GEMINI_API_KEY", "")
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not set in environment")
+def _make_gemini_client() -> genai.Client:
+    if not settings.gemini_api_key:
+        raise ValueError("GEMINI_API_KEY is not set")
     return genai.Client(
-        api_key=api_key,
+        api_key=settings.gemini_api_key,
         http_options=types.HttpOptions(async_client_args={"ssl": _SSL_CTX}),
     )
 
 
 def _make_rest_client() -> genai.Client:
-    api_key = os.environ.get("GEMINI_API_KEY", "")
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not set in environment")
+    if not settings.gemini_api_key:
+        raise ValueError("GEMINI_API_KEY is not set")
     return genai.Client(
-        api_key=api_key,
+        api_key=settings.gemini_api_key,
         http_options=types.HttpOptions(async_client_args={"verify": certifi.where()}),
     )
 
 
-def _make_config(system_prompt: str) -> types.LiveConnectConfig:
+def _make_live_config(system_prompt: str) -> types.LiveConnectConfig:
     tools = types.Tool(
         function_declarations=[
             types.FunctionDeclaration(
@@ -149,7 +143,7 @@ def _make_config(system_prompt: str) -> types.LiveConnectConfig:
             ),
             types.FunctionDeclaration(
                 name="navigate_to_repair",
-                description="Open the detail page for a specific repair/work order, optionally landing on a specific tab. Use when the technician asks to open, view, or resume a specific repair, or asks to see notes/parts/tasks for a named repair.",
+                description="Open the detail page for a specific repair/work order, optionally landing on a specific tab.",
                 parameters=types.Schema(
                     type="OBJECT",
                     properties={
@@ -160,7 +154,7 @@ def _make_config(system_prompt: str) -> types.LiveConnectConfig:
                         "tab": types.Schema(
                             type="STRING",
                             enum=["notes", "parts", "tasks", "attachments"],
-                            description="Which tab to open on the repair detail page. Omit to open the default (notes) tab.",
+                            description="Which tab to open on the repair detail page.",
                         ),
                     },
                     required=["repair_id"],
@@ -224,18 +218,9 @@ def _make_config(system_prompt: str) -> types.LiveConnectConfig:
                 parameters=types.Schema(
                     type="OBJECT",
                     properties={
-                        "repair_id": types.Schema(
-                            type="INTEGER",
-                            description="The repair (WorkOrderRepair) ID to attach the note to.",
-                        ),
-                        "subject": types.Schema(
-                            type="STRING",
-                            description="Short subject line for the note.",
-                        ),
-                        "note_text": types.Schema(
-                            type="STRING",
-                            description="The body of the note.",
-                        ),
+                        "repair_id": types.Schema(type="INTEGER", description="The repair ID to attach the note to."),
+                        "subject": types.Schema(type="STRING", description="Short subject line for the note."),
+                        "note_text": types.Schema(type="STRING", description="The body of the note."),
                     },
                     required=["repair_id", "note_text"],
                 ),
@@ -246,10 +231,7 @@ def _make_config(system_prompt: str) -> types.LiveConnectConfig:
                 parameters=types.Schema(
                     type="OBJECT",
                     properties={
-                        "repair_id": types.Schema(
-                            type="INTEGER",
-                            description="The repair ID whose tasks to retrieve.",
-                        )
+                        "repair_id": types.Schema(type="INTEGER", description="The repair ID whose tasks to retrieve.")
                     },
                     required=["repair_id"],
                 ),
@@ -260,10 +242,7 @@ def _make_config(system_prompt: str) -> types.LiveConnectConfig:
                 parameters=types.Schema(
                     type="OBJECT",
                     properties={
-                        "repair_id": types.Schema(
-                            type="INTEGER",
-                            description="The repair ID to update.",
-                        ),
+                        "repair_id": types.Schema(type="INTEGER", description="The repair ID to update."),
                         "status_code": types.Schema(
                             type="STRING",
                             description='Status code: "A" = Active/Open, "C" = Complete, "H" = Hold.',
@@ -309,10 +288,16 @@ async def _execute_tool(
     name: str,
     args: dict,
     technician_id: Optional[int],
+    session_ctx: dict,
     ws: WebSocket,
 ) -> dict:
-    db = SessionLocal()
-    try:
+    """Execute a Gemini tool call by delegating to the main backend API."""
+    backend = settings.backend_url
+
+    async with httpx.AsyncClient(base_url=backend, timeout=15.0) as client:
+
+        # ── Pure UI actions — no backend call needed ──────────────────────────
+
         if name == "navigate_to":
             section = args.get("section", "repairs")
             await ws.send_text(json.dumps({"type": "action", "action": "navigate", "section": section}))
@@ -328,109 +313,157 @@ async def _execute_tool(
             await ws.send_text(json.dumps({"type": "action", "action": "set_repairs_tab", "tab": tab}))
             return {"success": True, "tab": tab}
 
-        elif name == "navigate_to_repair":
-            repair_id = args.get("repair_id")
-            if not repair_id:
-                return {"error": "repair_id is required"}
-            repair = db.query(WorkOrderRepair).filter(WorkOrderRepair.id == repair_id).first()
-            if not repair:
-                return {"error": f"Repair {repair_id} not found"}
-            tab = args.get("tab")
-            msg = {"type": "action", "action": "navigate_repair", "repair_id": repair_id}
-            if tab:
-                msg["tab"] = tab
-            await ws.send_text(json.dumps(msg))
-            return {"success": True, "repair_id": repair_id}
-
-        elif name == "get_work_orders":
-            status_filter = args.get("status_filter", "all")
-            query = db.query(WorkOrderRepair)
-            if technician_id:
-                query = query.filter(WorkOrderRepair.technician_id == technician_id)
-            if status_filter == "open":
-                query = query.filter(WorkOrderRepair.is_open == True)
-            elif status_filter == "closed":
-                query = query.filter(WorkOrderRepair.is_open == False)
-            rows = query.limit(20).all()
-            work_orders = [
-                {
-                    "wo_number": r.wo_number,
-                    "title": r.title,
-                    "priority": r.priority,
-                    "parts_status": r.parts_status,
-                    "status": "open" if r.is_open else "closed",
-                    "repair_code": r.repair_code,
-                    "repair_id": r.id,
-                }
-                for r in rows
-            ]
-            return {"count": len(work_orders), "work_orders": work_orders}
-
-        elif name == "get_parts_requests":
-            tab = args.get("tab", "all")
-            query = db.query(Part)
-            if technician_id:
-                query = query.filter(Part.technician_id == technician_id)
-            if tab == "active":
-                query = query.filter(Part.request_part_status_id.in_([1, 2]))
-            elif tab == "past":
-                query = query.filter(Part.request_part_status_id == 3)
-            rows = query.limit(20).all()
-            parts = [
-                {
-                    "part_name": r.part_name,
-                    "wo_number": r.wo_number,
-                    "repair_code": r.repair_code,
-                    "qty": r.requested_qty,
-                    "status_id": r.request_part_status_id,
-                }
-                for r in rows
-            ]
-            return {"count": len(parts), "parts": parts}
-
-        elif name == "begin_shift":
-            if not technician_id:
-                return {"error": "No technician session active"}
-            tech = db.query(Technician).filter(Technician.id == technician_id).first()
-            if not tech:
-                return {"error": "Technician not found"}
-            existing = (
-                db.query(Shift)
-                .filter(Shift.technician_id == technician_id, Shift.end_time.is_(None))
-                .first()
-            )
-            if existing:
-                begin_time = existing.begin_time.isoformat() if existing.begin_time else datetime.now(timezone.utc).isoformat()
-                await ws.send_text(json.dumps({"type": "action", "action": "begin_shift", "begin_time": begin_time, "shift_id": existing.id}))
-                return {"success": True, "message": "Shift already active", "shift_id": existing.id}
-            shop_id = tech.shop_id or 1
-            shift = Shift(technician_id=technician_id, shop_id=shop_id, created_user_id=technician_id)
-            db.add(shift)
-            db.commit()
-            db.refresh(shift)
-            begin_time = shift.begin_time.isoformat() if shift.begin_time else datetime.now(timezone.utc).isoformat()
-            await ws.send_text(json.dumps({"type": "action", "action": "begin_shift", "begin_time": begin_time, "shift_id": shift.id}))
-            return {"success": True, "message": "Shift started", "shift_id": shift.id}
-
-        elif name == "end_shift":
-            if not technician_id:
-                return {"error": "No technician session active"}
-            shift = (
-                db.query(Shift)
-                .filter(Shift.technician_id == technician_id, Shift.end_time.is_(None))
-                .first()
-            )
-            if not shift:
-                return {"error": "No active shift found"}
-            shift.end_time = datetime.now(timezone.utc)
-            db.commit()
-            await ws.send_text(json.dumps({"type": "action", "action": "end_shift", "shift_id": shift.id}))
-            return {"success": True, "message": "Shift ended"}
-
         elif name == "set_indirect_activity":
             activity = args.get("activity", "")
             await ws.send_text(json.dumps({"type": "action", "action": "set_indirect_activity", "activity": activity}))
             return {"success": True, "activity": activity}
+
+        # ── Navigation with repair validation ─────────────────────────────────
+
+        elif name == "navigate_to_repair":
+            repair_id = args.get("repair_id")
+            if not repair_id:
+                return {"error": "repair_id is required"}
+            r = await client.get(f"/api/WorkOrderRepairs/{repair_id}")
+            if r.status_code == 404:
+                return {"error": f"Repair {repair_id} not found"}
+            msg = {"type": "action", "action": "navigate_repair", "repair_id": repair_id}
+            if tab := args.get("tab"):
+                msg["tab"] = tab
+            await ws.send_text(json.dumps(msg))
+            return {"success": True, "repair_id": repair_id}
+
+        # ── Reads ─────────────────────────────────────────────────────────────
+
+        elif name == "get_work_orders":
+            if not technician_id:
+                return {"error": "No technician session active"}
+            # Map Gemini's filter values to the backend's statusFilter enum values.
+            # Use the fasterweb query-param endpoint — it supports statusFilter and
+            # returns {success, data: {items: [...], pagination: {...}, ...}}.
+            status_filter = {"open": "Open", "closed": "Closed"}.get(
+                args.get("status_filter", "all"), "All"
+            )
+            r = await client.get(
+                "/api/WorkOrderRepairs/technician",
+                params={"technicianId": technician_id, "statusFilter": status_filter, "pageSize": 20},
+            )
+            if r.status_code != 200:
+                return {"error": f"Backend returned {r.status_code}"}
+            # Response shape: {success, data: {items: [...], pagination: {...}, openRepairCount, closedRepairCount}}
+            items = r.json().get("data", {}).get("items") or []
+            work_orders = [
+                {
+                    "repair_id": i.get("repairId"),
+                    "wo_number": i.get("documentNumber"),
+                    # title is split across three fields in the fasterweb format
+                    "title": " ".join(filter(None, [i.get("actionDesc"), i.get("groupDesc"), i.get("componentDesc")])) or f"Repair {i.get('repairId')}",
+                    "priority": i.get("priority"),
+                    # fasterweb returns "Working" for open, "Complete" for closed
+                    "status": "open" if i.get("status") != "Complete" else "closed",
+                }
+                for i in items
+            ]
+            return {"count": len(work_orders), "work_orders": work_orders}
+
+        elif name == "get_parts_requests":
+            if not technician_id:
+                return {"error": "No technician session active"}
+            # isRequestActive must be sent as a lowercase string ("true"/"false")
+            # so httpx doesn't render it as Python's "True"/"False".
+            tab = args.get("tab", "all")
+            params: dict = {"technicianId": technician_id, "pageNumber": 1, "pageSize": 20}
+            if tab == "active":
+                params["isRequestActive"] = "true"
+            elif tab == "past":
+                params["isRequestActive"] = "false"
+            r = await client.get("/api/parts/requested", params=params)
+            if r.status_code != 200:
+                return {"error": f"Backend returned {r.status_code}"}
+            # Response shape: PartInventoryOut = {data: [PartOut], requested, issued, delayed, ...}
+            payload = r.json()
+            parts = [
+                {
+                    "part_name": p.get("partName"),
+                    "wo_number": p.get("woNumber"),
+                    "repair_code": p.get("repairCode"),
+                    "qty": p.get("requestedQty"),
+                    "status": p.get("statusName"),
+                }
+                for p in (payload.get("data") or [])
+            ]
+            return {
+                "count": len(parts),
+                "parts": parts,
+                "summary": {
+                    "requested": payload.get("requested", 0),
+                    "issued": payload.get("issued", 0),
+                    "delayed": payload.get("delayed", 0),
+                },
+            }
+
+        elif name == "get_repair_tasks":
+            repair_id = args.get("repair_id")
+            if not repair_id:
+                return {"error": "repair_id is required"}
+            r = await client.get(f"/api/tasks/{repair_id}")
+            if r.status_code == 404:
+                return {"error": f"Repair {repair_id} not found"}
+            if r.status_code != 200:
+                return {"error": f"Backend returned {r.status_code}"}
+            # Response shape: TaskListResponse = {success, data: [TaskStepOut], ...}
+            # TaskStepOut fields: stepNumber, taskName, resultName, comment, instruction, repairTaskID, hasInstruction
+            tasks = r.json().get("data") or []
+            return {
+                "count": len(tasks),
+                "tasks": [
+                    {
+                        "step": t.get("stepNumber"),
+                        "name": t.get("taskName"),
+                        "result": t.get("resultName"),
+                        "comment": t.get("comment"),
+                    }
+                    for t in tasks
+                ],
+            }
+
+        # ── Writes — delegated entirely to main backend ───────────────────────
+
+        elif name == "begin_shift":
+            if not technician_id:
+                return {"error": "No technician session active"}
+            shop_id = session_ctx.get("shop_id")
+            if not shop_id:
+                # Fall back to fetching technician details from the backend
+                r = await client.get(f"/api/technicians/{technician_id}")
+                if r.status_code != 200:
+                    return {"error": "Could not resolve shop for technician"}
+                shop_id = r.json().get("shopId") or 1
+            r = await client.post(
+                f"/api/TechnicianDetails/{technician_id}/shift/begin",
+                params={"shopId": shop_id, "createdUserId": technician_id},
+            )
+            if r.status_code not in (200, 201):
+                return {"error": f"Backend returned {r.status_code}"}
+            data = r.json()
+            begin_time = data.get("beginTime") or datetime.now(timezone.utc).isoformat()
+            shift_id = data.get("id")
+            await ws.send_text(json.dumps({
+                "type": "action", "action": "begin_shift",
+                "begin_time": begin_time, "shift_id": shift_id,
+            }))
+            return {"success": True, "message": "Shift started", "shift_id": shift_id}
+
+        elif name == "end_shift":
+            if not technician_id:
+                return {"error": "No technician session active"}
+            r = await client.get(f"/api/Shifts/{technician_id}/end")
+            if r.status_code == 404:
+                return {"error": "No active shift found"}
+            if r.status_code not in (200, 201):
+                return {"error": f"Backend returned {r.status_code}"}
+            await ws.send_text(json.dumps({"type": "action", "action": "end_shift"}))
+            return {"success": True, **r.json()}
 
         elif name == "add_note":
             repair_id = args.get("repair_id")
@@ -438,76 +471,60 @@ async def _execute_tool(
             subject = args.get("subject", "Nova Note")
             if not repair_id:
                 return {"error": "repair_id is required"}
-            note = WorkOrderNote(
-                repair_id=repair_id,
-                subject=subject,
-                note=note_text,
-                created_technician_id=technician_id,
-                created_user_id=technician_id,
+            r = await client.post(
+                "/api/workordernotes",
+                json={
+                    "id": repair_id,
+                    "subject": subject,
+                    "note": note_text,
+                    "isDocument": False,
+                    "isPending": False,
+                    "createdUserID": technician_id,
+                    "createdTechnicianID": technician_id,
+                },
             )
-            db.add(note)
-            db.commit()
-            db.refresh(note)
-            # Signal frontend to refresh notes
+            if r.status_code not in (200, 201):
+                return {"error": f"Backend returned {r.status_code}"}
+            payload = r.json()
+            note_id = payload.get("data")
             await ws.send_text(json.dumps({"type": "action", "action": "refresh_notes", "repair_id": repair_id}))
-            return {"success": True, "note_id": note.id, "subject": subject}
-
-        elif name == "get_repair_tasks":
-            repair_id = args.get("repair_id")
-            if not repair_id:
-                return {"error": "repair_id is required"}
-            tasks = db.query(Task).filter(Task.repair_id == repair_id).order_by(Task.step_number).all()
-            return {
-                "count": len(tasks),
-                "tasks": [
-                    {
-                        "step": t.step_number,
-                        "name": t.task_name,
-                        "result": t.result_name,
-                        "comment": t.comment,
-                    }
-                    for t in tasks
-                ],
-            }
+            return {"success": True, "note_id": note_id, "subject": subject}
 
         elif name == "update_work_order_status":
             repair_id = args.get("repair_id")
             status_code = args.get("status_code", "A")
             if not repair_id:
                 return {"error": "repair_id is required"}
-            repair = db.query(WorkOrderRepair).filter(WorkOrderRepair.id == repair_id).first()
-            if not repair:
+            r = await client.patch(f"/api/workorders/{repair_id}/status/{status_code}")
+            if r.status_code == 404:
                 return {"error": f"Repair {repair_id} not found"}
-            repair.wo_status_code = status_code
-            if status_code == "C":
-                repair.is_open = False
-            elif status_code == "A":
-                repair.is_open = True
-            db.commit()
+            if r.status_code not in (200, 201):
+                return {"error": f"Backend returned {r.status_code}"}
             await ws.send_text(json.dumps({"type": "action", "action": "refresh_repair", "repair_id": repair_id}))
-            return {"success": True, "repair_id": repair_id, "status_code": status_code}
+            data = r.json().get("data", {})
+            return {"success": True, "repair_id": data.get("id", repair_id), "status_code": data.get("woStatusCode", status_code)}
 
         elif name == "set_repair_reason":
             repair_id = args.get("repair_id")
             reason_id = args.get("reason_id")
             if not repair_id or reason_id is None:
                 return {"error": "repair_id and reason_id are required"}
-            repair = db.query(WorkOrderRepair).filter(WorkOrderRepair.id == repair_id).first()
-            if not repair:
+            r = await client.patch(f"/api/WorkOrderRepairs/{repair_id}/Reason/{reason_id}")
+            if r.status_code == 404:
                 return {"error": f"Repair {repair_id} not found"}
-            repair.reason_id = reason_id
-            db.commit()
-            return {"success": True, "repair_id": repair_id, "reason_id": reason_id}
+            if r.status_code not in (200, 201):
+                return {"error": f"Backend returned {r.status_code}"}
+            data = r.json().get("data", {})
+            return {"success": True, "repair_id": data.get("id", repair_id), "reason_id": data.get("reasonId", reason_id)}
 
-        return {"error": f"Unknown tool: {name}"}
-    finally:
-        db.close()
+    return {"error": f"Unknown tool: {name}"}
 
 
 async def _recv_from_frontend(
     session: genai.live.AsyncSession,
     ws: WebSocket,
     technician_id: Optional[int],
+    session_ctx: dict,
 ):
     """Forward messages from the browser to the Gemini session."""
     try:
@@ -516,41 +533,45 @@ async def _recv_from_frontend(
             if msg["type"] == "websocket.disconnect":
                 break
 
-            if "text" in msg:
-                data = json.loads(msg["text"])
-                msg_type = data.get("type")
+            if "text" not in msg:
+                continue
 
-                if msg_type == "audio":
-                    await session.send_realtime_input(
-                        audio=types.Blob(
-                            data=base64.b64decode(data["data"]),
-                            mime_type=f"audio/pcm;rate={PCM_SAMPLE_RATE}",
-                        )
+            data = json.loads(msg["text"])
+            msg_type = data.get("type")
+
+            if msg_type == "audio":
+                await session.send_realtime_input(
+                    audio=types.Blob(
+                        data=base64.b64decode(data["data"]),
+                        mime_type=f"audio/pcm;rate={PCM_SAMPLE_RATE}",
                     )
+                )
 
-                elif msg_type == "audio_start":
-                    await session.send_realtime_input(activity_start=types.ActivityStart())
+            elif msg_type == "audio_start":
+                await session.send_realtime_input(activity_start=types.ActivityStart())
 
-                elif msg_type == "audio_end":
-                    await session.send_realtime_input(activity_end=types.ActivityEnd())
+            elif msg_type == "audio_end":
+                await session.send_realtime_input(activity_end=types.ActivityEnd())
 
-                elif msg_type == "text":
-                    content = data.get("content", "").strip()
-                    if content:
-                        await session.send_client_content(
-                            turns=types.Content(role="user", parts=[types.Part(text=content)]),
-                            turn_complete=True,
-                        )
-
-                elif msg_type == "context_update":
-                    # Inject current screen context into the live session so Gemini
-                    # knows what the technician is looking at without needing to ask.
-                    ctx = {k: v for k, v in data.items() if k != "type" and v is not None}
-                    context_text = "[CONTEXT] " + json.dumps(ctx)
+            elif msg_type == "text":
+                content = data.get("content", "").strip()
+                if content:
                     await session.send_client_content(
-                        turns=types.Content(role="user", parts=[types.Part(text=context_text)]),
-                        turn_complete=False,
+                        turns=types.Content(role="user", parts=[types.Part(text=content)]),
+                        turn_complete=True,
                     )
+
+            elif msg_type == "context_update":
+                # Keep session context in sync so tools (e.g. begin_shift) can use shopId
+                if data.get("shopId"):
+                    session_ctx["shop_id"] = data["shopId"]
+
+                ctx = {k: v for k, v in data.items() if k != "type" and v is not None}
+                context_text = "[CONTEXT] " + json.dumps(ctx)
+                await session.send_client_content(
+                    turns=types.Content(role="user", parts=[types.Part(text=context_text)]),
+                    turn_complete=False,
+                )
 
     except WebSocketDisconnect:
         pass
@@ -562,8 +583,9 @@ async def _recv_from_gemini(
     session: genai.live.AsyncSession,
     ws: WebSocket,
     technician_id: Optional[int],
+    session_ctx: dict,
 ):
-    """Forward Gemini responses to the browser, handle tool calls."""
+    """Forward Gemini responses to the browser and handle tool calls."""
     try:
         while True:
             async for response in session.receive():
@@ -588,13 +610,12 @@ async def _recv_from_gemini(
                             }))
 
                 # Text chunks
-                text_parts = []
                 if sc and sc.model_turn and sc.model_turn.parts:
                     text_parts = [p.text for p in sc.model_turn.parts if p.text]
-                if text_parts:
-                    await ws.send_text(json.dumps({
-                        "type": "text", "role": "assistant", "text": "".join(text_parts)
-                    }))
+                    if text_parts:
+                        await ws.send_text(json.dumps({
+                            "type": "text", "role": "assistant", "text": "".join(text_parts),
+                        }))
 
                 # Voice transcripts
                 if sc:
@@ -614,13 +635,11 @@ async def _recv_from_gemini(
                     await ws.send_text(json.dumps({"type": "status", "state": "thinking"}))
                     fn_responses = []
                     for fn_call in response.tool_call.function_calls:
-                        result = await _execute_tool(fn_call.name, dict(fn_call.args), technician_id, ws)
+                        result = await _execute_tool(
+                            fn_call.name, dict(fn_call.args), technician_id, session_ctx, ws
+                        )
                         fn_responses.append(
-                            types.FunctionResponse(
-                                name=fn_call.name,
-                                id=fn_call.id,
-                                response=result,
-                            )
+                            types.FunctionResponse(name=fn_call.name, id=fn_call.id, response=result)
                         )
                     await session.send_tool_response(function_responses=fn_responses)
 
@@ -643,31 +662,36 @@ async def _recv_from_gemini(
 async def nova_ws(ws: WebSocket, technicianId: Optional[str] = Query(None)):
     await ws.accept()
 
-    tech_id: Optional[int] = None
-    if technicianId and technicianId.isdigit():
-        tech_id = int(technicianId)
+    tech_id: Optional[int] = int(technicianId) if technicianId and technicianId.isdigit() else None
+    session_ctx: dict = {"shop_id": None}
 
-    # Load technician for personalized system prompt
-    db = SessionLocal()
-    try:
-        tech = db.query(Technician).filter(Technician.id == tech_id).first() if tech_id else None
-        system_prompt = _build_system_prompt(tech)
-    finally:
-        db.close()
+    # Fetch technician details for a personalised system prompt
+    tech_data: Optional[dict] = None
+    if tech_id:
+        try:
+            async with httpx.AsyncClient(base_url=settings.backend_url, timeout=5.0) as client:
+                r = await client.get(f"/api/technicians/{tech_id}")
+                if r.status_code == 200:
+                    tech_data = r.json()
+                    session_ctx["shop_id"] = tech_data.get("shopId")
+        except Exception:
+            pass
+
+    system_prompt = _build_system_prompt(tech_data)
 
     try:
-        client = _make_client()
+        client = _make_gemini_client()
     except ValueError as e:
         await ws.send_text(json.dumps({"type": "error", "message": str(e)}))
         await ws.close()
         return
 
     try:
-        async with client.aio.live.connect(model=GEMINI_MODEL, config=_make_config(system_prompt)) as session:
+        async with client.aio.live.connect(model=GEMINI_MODEL, config=_make_live_config(system_prompt)) as session:
             await ws.send_text(json.dumps({"type": "status", "state": "connected"}))
 
-            t1 = asyncio.create_task(_recv_from_frontend(session, ws, tech_id))
-            t2 = asyncio.create_task(_recv_from_gemini(session, ws, tech_id))
+            t1 = asyncio.create_task(_recv_from_frontend(session, ws, tech_id, session_ctx))
+            t2 = asyncio.create_task(_recv_from_gemini(session, ws, tech_id, session_ctx))
 
             done, pending = await asyncio.wait([t1, t2], return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
@@ -692,9 +716,6 @@ async def nova_ws(ws: WebSocket, technicianId: Optional[str] = Query(None)):
             pass
 
 
-# ── STT transcription endpoint ────────────────────────────────────────────────
-from fastapi import UploadFile, File, Form  # noqa: E402
-
 @router.post("/stt/transcribe")
 async def transcribe_audio(
     file: UploadFile = File(...),
@@ -702,7 +723,6 @@ async def transcribe_audio(
 ):
     audio_bytes = await file.read()
     content_type = file.content_type or "audio/webm"
-
     try:
         client = _make_rest_client()
         response = await client.aio.models.generate_content(
@@ -714,8 +734,7 @@ async def transcribe_audio(
                 ]
             ),
         )
-        text = response.text.strip() if response.text else ""
-        return {"text": text}
+        return {"text": (response.text or "").strip()}
     except Exception as e:
         print(f"[STT] transcription error: {e}")
         return {"text": "", "error": str(e)}

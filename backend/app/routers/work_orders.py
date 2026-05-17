@@ -10,6 +10,8 @@ from app.models.work_order import WorkOrder, WorkOrderRepair, RepairTimer
 from app.models.shift import Shift
 from app.models.lookup import WorkOrderStatus, RepairReason
 from app.schemas.work_order import WorkOrderRepairOut, PaginatedWorkOrders
+from app.services import work_orders as wo_service
+from app.services.work_orders import RepairNotFoundError
 
 
 class RepairBeginIn(BaseModel):
@@ -463,13 +465,10 @@ def get_wo_statuses(db: Session = Depends(get_db)):
 @router.patch("/work-orders/{work_order_id}/status/{status_code}")
 @router.patch("/workorders/{work_order_id}/status/{status_code}")
 def change_wo_status(work_order_id: int, status_code: str, db: Session = Depends(get_db)):
-    repair = db.query(WorkOrderRepair).filter(WorkOrderRepair.id == work_order_id).first()
-    if not repair:
-        raise HTTPException(status_code=404, detail="Work order not found")
-    repair.wo_status_code = status_code
-    if status_code.upper() in ("C", "X"):
-        repair.is_open = False
-    db.commit()
+    try:
+        repair = wo_service.update_status(db, work_order_id, status_code)
+    except RepairNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     return _fasterweb_envelope(
         {"id": repair.id, "woStatusCode": repair.wo_status_code},
         "Status updated",
@@ -478,11 +477,10 @@ def change_wo_status(work_order_id: int, status_code: str, db: Session = Depends
 
 @router.patch("/WorkOrderRepairs/{repair_id}/Reason/{reason_id}")
 def set_repair_reason(repair_id: int, reason_id: int, db: Session = Depends(get_db)):
-    repair = db.query(WorkOrderRepair).filter(WorkOrderRepair.id == repair_id).first()
-    if not repair:
-        raise HTTPException(status_code=404, detail="Work order repair not found")
-    repair.reason_id = reason_id
-    db.commit()
+    try:
+        repair = wo_service.set_reason(db, repair_id, reason_id)
+    except RepairNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     return _fasterweb_envelope(
         {"id": repair.id, "reasonId": repair.reason_id},
         "Reason updated",
