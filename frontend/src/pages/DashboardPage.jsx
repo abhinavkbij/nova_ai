@@ -86,6 +86,11 @@ function mapPartRequest(part) {
 
 const REPAIR_ROWS_OPTIONS = [6, 10, 25];
 
+function getRepairActionLabel(wo) {
+  if (!wo?.isOpen || wo?.rawStatus === 'Complete') return 'View';
+  return wo.rawStatus === 'In Progress' ? 'Resume' : 'Begin';
+}
+
 export default function DashboardPage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -837,7 +842,7 @@ function PriorityIcon({ priority }) {
 
 // ── Work Order Card (grid) ────────────────────────────────────────────────────
 function WorkOrderCard({ wo, onOpen }) {
-  const isResuming = wo.isOpen && wo.rawStatus === 'In Progress';
+  const actionLabel = getRepairActionLabel(wo);
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md transition-shadow flex flex-col">
       {/* Top: priority badge + message */}
@@ -894,7 +899,7 @@ function WorkOrderCard({ wo, onOpen }) {
         onClick={() => onOpen?.(wo.repairId)}
         className="w-full py-2 border border-gray-200 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
       >
-        {isResuming ? 'Resume' : 'Begin'}
+        {actionLabel}
       </button>
     </div>
   );
@@ -918,7 +923,7 @@ function RepairsTable({ rows, onOpen }) {
         </thead>
         <tbody>
           {rows.map((wo, i) => {
-            const isResuming = wo.isOpen && wo.rawStatus === 'In Progress';
+            const actionLabel = getRepairActionLabel(wo);
             return (
               <tr key={wo.id} className={`hover:bg-gray-50 transition-colors ${i < rows.length - 1 ? 'border-b border-gray-100' : ''}`}>
                 <td className="px-3 py-3"><PriorityIcon priority={wo.priority} /></td>
@@ -945,7 +950,7 @@ function RepairsTable({ rows, onOpen }) {
                     onClick={() => onOpen?.(wo.repairId)}
                     className="px-4 py-1.5 border border-gray-200 rounded-lg text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors whitespace-nowrap"
                   >
-                    {isResuming ? 'Resume' : 'Begin'}
+                    {actionLabel}
                   </button>
                 </td>
               </tr>

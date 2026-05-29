@@ -66,8 +66,23 @@ export function addRepairNote({ id, subject, note, isDocument = false, createdTe
   });
 }
 
+export function updateRepairNote(noteId, { subject, note } = {}) {
+  return api.put(`/workordernotes/${noteId}`, {
+    subject,
+    note,
+  });
+}
+
 export function getRepairTasks(repairId) {
   return api.get(`/tasks/${repairId}`);
+}
+
+export function updateRepairTask(taskId, { stepNumber, resultId, comment } = {}) {
+  return api.put(`/task/${taskId}`, {
+    stepNumber,
+    resultId,
+    comment,
+  });
 }
 
 export function getRepairTimer(repairId, technicianId) {

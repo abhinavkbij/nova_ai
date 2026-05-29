@@ -8,16 +8,44 @@ from app.schemas.work_order import TaskListResponse, TaskStepOut, TaskUpdateIn
 
 router = APIRouter(tags=["tasks"])
 
+RESULT_NAMES_BY_ID = {
+    1: "Replace",
+    2: "Adjusted",
+    3: "Completed",
+    4: "N/A",
+}
+
+RESULT_NAME_ALIASES = {
+    "replace": "Replace",
+    "replaced": "Replace",
+    "adjust": "Adjusted",
+    "adjusted": "Adjusted",
+    "complete": "Completed",
+    "completed": "Completed",
+    "na": "N/A",
+    "n/a": "N/A",
+    "not applicable": "N/A",
+}
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _resolution_name(result_id: int | None, result_name: str | None) -> str | None:
+    if result_name:
+        normalized = result_name.strip().lower().replace(".", "")
+        return RESULT_NAME_ALIASES.get(normalized, result_name)
+    if result_id is not None:
+        return RESULT_NAMES_BY_ID.get(result_id)
+    return None
 
 
 def _task_to_step(task: Task) -> TaskStepOut:
     return TaskStepOut(
         stepNumber=task.step_number,
         taskName=task.task_name,
-        resultName=task.result_name,
+        resultName=_resolution_name(task.result_id, task.result_name),
         comment=task.comment or "",
         instruction=task.instruction,
         repairTaskID=task.id,
@@ -47,11 +75,13 @@ def update_task(task_id: int, payload: TaskUpdateIn, db: Session = Depends(get_d
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    if payload.stepNumber is not None:
+    fields_set = payload.model_fields_set
+    if "stepNumber" in fields_set:
         task.step_number = payload.stepNumber
-    if payload.resultId is not None:
+    if "resultId" in fields_set:
         task.result_id = payload.resultId
-    if payload.comment is not None:
+        task.result_name = RESULT_NAMES_BY_ID.get(payload.resultId) if payload.resultId is not None else None
+    if "comment" in fields_set:
         task.comment = payload.comment
     db.commit()
     db.refresh(task)

@@ -1,11 +1,11 @@
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 
 from app.database import get_db
 from app.models.work_order import WorkOrderNote, WorkOrderRepair
-from app.schemas.work_order import NoteOut, NoteCreateIn
+from app.schemas.work_order import NoteOut, NoteCreateIn, NoteUpdateIn
 from app.services import notes as notes_service
 
 router = APIRouter(prefix="/workordernotes", tags=["notes"])
@@ -86,3 +86,19 @@ def add_note(payload: NoteCreateIn, db: Session = Depends(get_db)):
             technician_id=payload.createdTechnicianID,
         )
     return _envelope(note.id, "Successfully added a note.")
+
+
+@router.put("/{note_id}")
+def update_note(note_id: int, payload: NoteUpdateIn, db: Session = Depends(get_db)):
+    note = db.query(WorkOrderNote).filter(WorkOrderNote.id == note_id).first()
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+
+    if payload.subject is not None:
+        note.subject = payload.subject
+    if payload.note is not None:
+        note.note = payload.note
+
+    db.commit()
+    db.refresh(note)
+    return _envelope(_note_to_out(note, note.repair_id or 0), "Successfully updated a note.")

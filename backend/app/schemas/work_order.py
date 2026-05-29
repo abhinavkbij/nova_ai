@@ -79,3 +79,8 @@ class NoteCreateIn(BaseModel):
     isPending: bool = False
     createdUserID: Optional[int] = None
     createdTechnicianID: Optional[int] = None
+
+
+class NoteUpdateIn(BaseModel):
+    subject: Optional[str] = None
+    note: Optional[str] = None

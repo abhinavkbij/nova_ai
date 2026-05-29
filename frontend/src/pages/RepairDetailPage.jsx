@@ -8,7 +8,7 @@ import {
   Calendar, Edit3, FileText, ScanLine, Clock, Mail, Info,
   LayoutGrid, List, Eye, Download,
 } from 'lucide-react';
-import { getWorkOrderRepair, getRepairNotes, addRepairNote, getRepairTasks, getRepairTimer, startRepairTimer, completeRepair, getRepairReasons, setRepairReason, getWorkOrderStatuses, changeWorkOrderStatus } from '../api/workOrders';
+import { getWorkOrderRepair, getRepairNotes, addRepairNote, updateRepairNote, getRepairTasks, updateRepairTask, getRepairTimer, startRepairTimer, completeRepair, getRepairReasons, setRepairReason, getWorkOrderStatuses, changeWorkOrderStatus } from '../api/workOrders';
 import { getRepairParts, searchPartsCatalog, issuePartRequest } from '../api/parts';
 
 const ATTACHMENT_CATEGORIES = [
@@ -63,6 +63,41 @@ function formatDateTime(value) {
   );
 }
 
+function isRepairClosed(repair) {
+  if (!repair) return false;
+  const statusCode = String(repair.workOrderStatusCode || '').toUpperCase();
+  return repair.isOpen === false || repair.status === 'Complete' || statusCode === 'C' || statusCode === 'X';
+}
+
+function getTaskUiKey(task, index) {
+  if (task.repairTaskID && task.repairTaskID !== 0) return String(task.repairTaskID);
+  if (task.stepNumber != null) return `step-${task.stepNumber}`;
+  return `task-${index}`;
+}
+
+function normalizeTaskResolution(resultName) {
+  const value = String(resultName || '').trim().toLowerCase().replace('.', '');
+  const normalized = value.replace('/', '').replace(/\s+/g, '');
+  const aliases = {
+    replace: 'replace',
+    replaced: 'replace',
+    adjust: 'adjusted',
+    adjusted: 'adjusted',
+    complete: 'completed',
+    completed: 'completed',
+    na: 'na',
+    'notapplicable': 'na',
+  };
+  return aliases[normalized] || null;
+}
+
+const TASK_RESULT_IDS = {
+  replace: 1,
+  adjusted: 2,
+  completed: 3,
+  na: 4,
+};
+
 
 export default function RepairDetailPage() {
   const { repairId } = useParams();
@@ -87,6 +122,8 @@ export default function RepairDetailPage() {
   const [notesSearchQuery,  setNotesSearchQuery]  = useState('');
   const [notesFilter,       setNotesFilter]       = useState('all');
   const [showAddNoteModal,  setShowAddNoteModal]  = useState(false);
+  const [viewingNote,       setViewingNote]       = useState(null);
+  const [editingNote,       setEditingNote]       = useState(null);
 
   // ── Parts state ────────────────────────────────────────────────────────────
   const [partsCount,       setPartsCount]       = useState(0);
@@ -239,11 +276,13 @@ export default function RepairDetailPage() {
           setTasks(items);
           const resolutions = {};
           const comments    = {};
-          items.forEach((t) => {
-            if (t.resultName) {
-              resolutions[t.repairTaskID] = t.resultName.toLowerCase().replace('/', '').replace(/\s+/g, '');
+          items.forEach((t, index) => {
+            const taskKey = getTaskUiKey(t, index);
+            const resolution = normalizeTaskResolution(t.resultName);
+            if (resolution) {
+              resolutions[taskKey] = resolution;
             }
-            if (t.comment) comments[t.repairTaskID] = t.comment;
+            if (t.comment) comments[taskKey] = t.comment;
           });
           setTaskResolutions(resolutions);
           setTaskComments(comments);
@@ -255,10 +294,18 @@ export default function RepairDetailPage() {
 
   // ── Fetch + start repair timer ─────────────────────────────────────────────
   useEffect(() => {
-    if (!repairId || !technician?.id) return;
+    if (!repairId || !technician?.id || !repair) return;
+    if (isRepairClosed(repair)) {
+      setTimerRunning(false);
+      setTimerStartedAt(null);
+      setTimerElapsed(0);
+      return;
+    }
+    let ignore = false;
     const tid = technician.id;
     getRepairTimer(repairId, tid)
       .then((r) => {
+        if (ignore) return;
         const d = r.data?.data;
         if (d?.isRunning) {
           setTimerRunning(true);
@@ -267,6 +314,7 @@ export default function RepairDetailPage() {
         } else {
           startRepairTimer(repairId, tid)
             .then((sr) => {
+              if (ignore) return;
               const sd = sr.data?.data;
               setTimerRunning(true);
               setTimerStartedAt(sd?.startTime ?? new Date().toISOString());
@@ -276,7 +324,8 @@ export default function RepairDetailPage() {
         }
       })
       .catch(() => {});
-  }, [repairId, technician?.id]);
+    return () => { ignore = true; };
+  }, [repair, repairId, technician?.id]);
 
   useEffect(() => {
     if (!timerRunning || !timerStartedAt) return;
@@ -354,7 +403,8 @@ export default function RepairDetailPage() {
   const searchResults = catalogResults;
 
   const completedCount    = Object.values(taskResolutions).filter((r) => r === 'completed').length;
-  const allTasksResolved  = tasks.length > 0 && tasks.every((t) => taskResolutions[t.repairTaskID] != null);
+  const allTasksResolved  = tasks.length > 0 && tasks.every((t, index) => taskResolutions[getTaskUiKey(t, index)] != null);
+  const repairClosed      = isRepairClosed(repair);
   const tasksLabel        = `Tasks (${completedCount}/${tasks.length || 8})`;
 
   const toggleInstruction = (taskId) =>
@@ -363,6 +413,30 @@ export default function RepairDetailPage() {
       next.has(taskId) ? next.delete(taskId) : next.add(taskId);
       return next;
     });
+
+  const handleTaskResolution = (task, index, resolution) => {
+    const taskKey = getTaskUiKey(task, index);
+    const previous = taskResolutions[taskKey] || null;
+    const taskId = task.repairTaskID;
+
+    setTaskResolutions((prev) => ({ ...prev, [taskKey]: resolution }));
+
+    if (!taskId || taskId === 0) {
+      setTaskResolutions((prev) => ({ ...prev, [taskKey]: previous }));
+      setToast({ type: 'error', message: 'Cannot save task resolution because the task ID is missing.' });
+      setTimeout(() => setToast(null), 4000);
+      return;
+    }
+
+    updateRepairTask(taskId, {
+      resultId: resolution ? TASK_RESULT_IDS[resolution] : null,
+      comment: taskComments[taskKey] || '',
+    }).catch(() => {
+      setTaskResolutions((prev) => ({ ...prev, [taskKey]: previous }));
+      setToast({ type: 'error', message: 'Failed to save task resolution. Please try again.' });
+      setTimeout(() => setToast(null), 4000);
+    });
+  };
 
   return (
     <div className="h-screen flex bg-gray-50 overflow-hidden">
@@ -448,10 +522,10 @@ export default function RepairDetailPage() {
                   <div className="flex-1" />
                   <div className="flex items-center gap-3 pb-1">
                     <button
-                      disabled={!allTasksResolved || completing}
+                      disabled={!allTasksResolved || completing || repairClosed}
                       onClick={() => setShowDoneModal(true)}
                       className={`flex items-center gap-2 px-5 py-2.5 text-sm font-medium rounded-lg transition-colors
-                        ${allTasksResolved && !completing
+                        ${allTasksResolved && !completing && !repairClosed
                           ? 'bg-green-600 text-white hover:bg-green-700'
                           : 'text-gray-400 bg-gray-200 cursor-not-allowed select-none'
                         }`}
@@ -545,7 +619,14 @@ export default function RepairDetailPage() {
                   <div className="space-y-3">
                     {filteredNotes.length === 0
                       ? <div className="py-12 text-center text-gray-400 text-sm">No notes found</div>
-                      : filteredNotes.map((note) => <NoteCard key={note.id} note={note} />)
+                      : filteredNotes.map((note) => (
+                        <NoteCard
+                          key={note.noteId || note.id}
+                          note={note}
+                          onEdit={() => setEditingNote(note)}
+                          onView={() => setViewingNote(note)}
+                        />
+                      ))
                     }
                   </div>
                 </div>
@@ -688,19 +769,22 @@ export default function RepairDetailPage() {
                   ) : tasks.length === 0 ? (
                     <div className="py-12 text-center text-gray-400 text-sm">No tasks assigned</div>
                   ) : (
-                    tasks.map((task) => (
-                      <TaskCard
-                        key={task.repairTaskID}
-                        task={task}
-                        resolution={taskResolutions[task.repairTaskID] || null}
-                        onResolution={(r) => setTaskResolutions((prev) => ({ ...prev, [task.repairTaskID]: r }))}
-                        comment={taskComments[task.repairTaskID] || ''}
-                        onComment={(c) => setTaskComments((prev) => ({ ...prev, [task.repairTaskID]: c }))}
-                        instructionExpanded={expandedInstructions.has(task.repairTaskID)}
-                        onToggleInstruction={() => toggleInstruction(task.repairTaskID)}
-                        technicianName={technician?.name}
-                      />
-                    ))
+                    tasks.map((task, index) => {
+                      const taskKey = getTaskUiKey(task, index);
+                      return (
+                        <TaskCard
+                          key={taskKey}
+                          task={task}
+                          resolution={taskResolutions[taskKey] || null}
+                          onResolution={(r) => handleTaskResolution(task, index, r)}
+                          comment={taskComments[taskKey] || ''}
+                          onComment={(c) => setTaskComments((prev) => ({ ...prev, [taskKey]: c }))}
+                          instructionExpanded={expandedInstructions.has(taskKey)}
+                          onToggleInstruction={() => toggleInstruction(taskKey)}
+                          technicianName={technician?.name}
+                        />
+                      );
+                    })
                   )}
                 </div>
               )}
@@ -1041,10 +1125,13 @@ export default function RepairDetailPage() {
             changeWorkOrderStatus(repairId, selectedStatusCode)
               .then(() => {
                 const matched = statuses.find((s) => s.status === selectedStatusCode);
+                const isClosedStatus = ['C', 'X'].includes(selectedStatusCode.toUpperCase());
                 setRepair((prev) => prev ? {
                   ...prev,
                   workOrderStatusCode: selectedStatusCode,
                   workOrderStatusDesc: matched?.statusDesc || selectedStatusCode,
+                  status: isClosedStatus ? 'Complete' : 'Working',
+                  isOpen: !isClosedStatus,
                 } : prev);
                 setShowStatusModal(false);
                 setToast({ type: 'success', message: 'Work Order Status Successfully Updated.' });
@@ -1113,6 +1200,30 @@ export default function RepairDetailPage() {
           }}
         />
       )}
+
+      {viewingNote && (
+        <ViewNoteModal
+          note={viewingNote}
+          onClose={() => setViewingNote(null)}
+          onEdit={() => {
+            setEditingNote(viewingNote);
+            setViewingNote(null);
+          }}
+        />
+      )}
+
+      {editingNote && (
+        <EditNoteModal
+          note={editingNote}
+          onClose={() => setEditingNote(null)}
+          onSuccess={() => {
+            fetchNotes(notesSearchQuery);
+            setEditingNote(null);
+            setToast({ type: 'success', message: 'Note updated successfully.' });
+            setTimeout(() => setToast(null), 4000);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1130,10 +1241,26 @@ function PriorityBadge({ priority }) {
   );
 }
 
-function NoteCard({ note }) {
-  const subject   = note.noteSubject || note.subject || note.title || '--';
-  const body      = note.noteText    || note.note    || note.body  || '--';
-  const author    = note.userName    || note.authorName || note.createdBy || '';
+function getNoteId(note) {
+  return note.noteId || note.id;
+}
+
+function getNoteSubject(note) {
+  return note.noteSubject || note.subject || note.title || '';
+}
+
+function getNoteBody(note) {
+  return note.noteText || note.note || note.body || '';
+}
+
+function getNoteAuthor(note) {
+  return note.userName || note.authorName || note.createdBy || '';
+}
+
+function NoteCard({ note, onEdit, onView }) {
+  const subject   = getNoteSubject(note) || '--';
+  const body      = getNoteBody(note) || '--';
+  const author    = getNoteAuthor(note);
   const initials  = author ? author.replace('.', '').slice(0, 2).toUpperCase() : 'U';
   const date      = note.createdDate || note.date || '';
   const typeLabel = note.isWorkOrder ? 'Work Order' : 'Repair';
@@ -1157,14 +1284,148 @@ function NoteCard({ note }) {
           <span>{date ? new Date(date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '--'}</span>
         </div>
         <div className="flex-1" />
-        <button className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 transition-colors">
+        <button
+          onClick={onEdit}
+          className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 transition-colors"
+        >
           <Edit3 className="w-3.5 h-3.5" />
           Edit Note
         </button>
-        <button className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 transition-colors">
+        <button
+          onClick={onView}
+          className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 transition-colors"
+        >
           <FileText className="w-3.5 h-3.5" />
           View Full Note
         </button>
+      </div>
+    </div>
+  );
+}
+
+function ViewNoteModal({ note, onClose, onEdit }) {
+  const subject = getNoteSubject(note) || '--';
+  const body = getNoteBody(note) || '--';
+  const author = getNoteAuthor(note) || '--';
+  const date = note.createdDate || note.date || '';
+  const typeLabel = note.isWorkOrder ? 'Work Order' : 'Repair';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+      <div className="bg-white rounded-2xl shadow-2xl w-[620px] max-w-[calc(100vw-2rem)] p-6">
+        <div className="flex items-start justify-between gap-4 mb-5">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-2">
+              <h2 className="text-lg font-bold text-gray-900 break-words">{subject}</h2>
+              <span className="px-2 py-0.5 text-[10px] font-medium text-gray-500 bg-gray-100 rounded border border-gray-200 shrink-0">
+                {typeLabel}
+              </span>
+            </div>
+            <p className="text-xs text-gray-500">
+              {author} · {date ? formatDateTime(date) : '--'}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors shrink-0" aria-label="Close">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="max-h-[50vh] overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-4">
+          <p className="whitespace-pre-wrap text-sm leading-6 text-gray-700">{body}</p>
+        </div>
+
+        <div className="flex justify-end gap-3 mt-5">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+          >
+            Close
+          </button>
+          <button
+            onClick={onEdit}
+            className="inline-flex items-center gap-1.5 px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors"
+          >
+            <Edit3 className="w-4 h-4" />
+            Edit Note
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditNoteModal({ note, onClose, onSuccess }) {
+  const [subject, setSubject] = useState(getNoteSubject(note));
+  const [noteText, setNoteText] = useState(getNoteBody(note));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = () => {
+    if (!subject.trim()) { setError('Subject is required.'); return; }
+    if (!noteText.trim()) { setError('Note text is required.'); return; }
+
+    const noteId = getNoteId(note);
+    if (!noteId) { setError('Cannot update note because its ID is missing.'); return; }
+
+    setSaving(true);
+    setError('');
+    updateRepairNote(noteId, {
+      subject: subject.trim(),
+      note: noteText.trim(),
+    })
+      .then(onSuccess)
+      .catch(() => setError('Failed to update note. Please try again.'))
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+      <div className="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[calc(100vw-2rem)] p-6">
+        <div className="flex items-start justify-between mb-4">
+          <h2 className="text-lg font-bold text-gray-900">Edit Note</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors" aria-label="Close">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="mb-4">
+          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Subject</label>
+          <input
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            placeholder="Note subject"
+            className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg outline-none focus:border-blue-400 transition-colors"
+          />
+        </div>
+
+        <div className="mb-4">
+          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Note</label>
+          <textarea
+            rows={5}
+            value={noteText}
+            onChange={(e) => setNoteText(e.target.value)}
+            placeholder="Enter your note here..."
+            className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg outline-none focus:border-blue-400 transition-colors resize-none"
+          />
+        </div>
+
+        {error && <p className="text-sm text-red-500 mb-3">{error}</p>}
+
+        <div className="flex justify-end gap-3">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={saving}
+            className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-colors"
+          >
+            {saving ? 'Saving...' : 'Save Changes'}
+          </button>
+        </div>
       </div>
     </div>
   );
