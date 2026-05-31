@@ -436,9 +436,20 @@ def begin_repair(repair_id: int, payload: RepairBeginIn, db: Session = Depends(g
     if payload.isWOStatusToActive:
         repair.wo_status_code = "A"
         repair.is_open = True
+
+    wo_label = repair.wo_number or f"Repair {repair.id}"
+    active_shift = (
+        db.query(Shift)
+        .filter(Shift.technician_id == payload.technicianId, Shift.end_time.is_(None))
+        .order_by(Shift.begin_time.desc())
+        .first()
+    )
+    if active_shift:
+        active_shift.status_indicator = wo_label
+
     db.commit()
     return _fasterweb_envelope(
-        {"repairId": repair.id, "woStatusCode": repair.wo_status_code},
+        {"repairId": repair.id, "woStatusCode": repair.wo_status_code, "statusIndicator": wo_label},
         "Repair begun successfully",
     )
 

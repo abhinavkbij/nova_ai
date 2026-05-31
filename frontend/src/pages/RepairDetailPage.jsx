@@ -10,6 +10,8 @@ import {
 } from 'lucide-react';
 import { getWorkOrderRepair, getRepairNotes, addRepairNote, updateRepairNote, getRepairTasks, updateRepairTask, getRepairTimer, startRepairTimer, completeRepair, getRepairReasons, setRepairReason, getWorkOrderStatuses, changeWorkOrderStatus } from '../api/workOrders';
 import { getRepairParts, searchPartsCatalog, issuePartRequest } from '../api/parts';
+import { getStatusIndicator, submitIndirectActivity } from '../api/technicians';
+import IndirectActivityModal from '../components/IndirectActivityModal';
 
 const ATTACHMENT_CATEGORIES = [
   'ENGINE ANALYSIS', 'COOLANT ANALYSIS', 'BRAKE INSPECTION', 'TIRE ANALYSIS',
@@ -179,6 +181,27 @@ export default function RepairDetailPage() {
   const [showAddAttachmentModal, setShowAddAttachmentModal] = useState(false);
   const [editingAttachment,      setEditingAttachment]      = useState(null);
   const [viewingAttachment,      setViewingAttachment]      = useState(null);
+
+  // ── Header / indirect activity state ──────────────────────────────────────
+  const activityKey = `status_activity_${technician?.id}`;
+  const [currentActivity, setCurrentActivity] = useState(() => {
+    try { return localStorage.getItem(`status_activity_${technician?.id}`) || ''; } catch { return ''; }
+  });
+  const [indirectModal, setIndirectModal] = useState(false);
+
+  // ── Fetch status indicator for header ─────────────────────────────────────
+  useEffect(() => {
+    if (!technician?.id) return;
+    getStatusIndicator(technician.id)
+      .then((res) => {
+        const data = res.data;
+        if (data?.statusIndicator) {
+          setCurrentActivity(data.statusIndicator);
+          localStorage.setItem(activityKey, data.statusIndicator);
+        }
+      })
+      .catch(() => {});
+  }, [technician?.id]); // eslint-disable-line
 
   // ── Fetch repair ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -472,6 +495,32 @@ export default function RepairDetailPage() {
 
       {/* ── Main ── */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+
+        {/* Header */}
+        <header className="bg-white border-b border-gray-200 px-4 py-2.5 flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2 flex-1">
+            <span className="font-bold text-gray-900 text-sm">Company</span>
+            <span className="font-light text-gray-400 text-sm">Logo</span>
+            {technician?.shop && (
+              <span className="ml-1 px-2 py-0.5 text-xs font-semibold text-gray-600 bg-gray-100 rounded border border-gray-200">
+                {technician.shop}
+              </span>
+            )}
+          </div>
+          <button
+            onClick={() => setIndirectModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+          >
+            <Clock className="w-3.5 h-3.5" />
+            Indirect Activity
+          </button>
+          <button className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg">
+            Status: {currentActivity}
+          </button>
+          <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
+            {technician?.name?.split(' ').map((n) => n[0]).join('').slice(0, 2) || 'AA'}
+          </div>
+        </header>
 
         {/* Breadcrumb bar */}
         <div className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between shrink-0">
@@ -1221,6 +1270,26 @@ export default function RepairDetailPage() {
             setEditingNote(null);
             setToast({ type: 'success', message: 'Note updated successfully.' });
             setTimeout(() => setToast(null), 4000);
+          }}
+        />
+      )}
+
+      {/* Indirect Activity Modal */}
+      {indirectModal && (
+        <IndirectActivityModal
+          onClose={() => setIndirectModal(false)}
+          onSelect={(activity) => {
+            const id = typeof activity === 'object' ? activity?.repairGroupComponentActionID : null;
+            setIndirectModal(false);
+            const doLogout = () => {
+              sessionStorage.removeItem('loggedInTechnician');
+              navigate('/');
+            };
+            if (id != null) {
+              submitIndirectActivity(technician.id, id).catch(() => {}).finally(doLogout);
+            } else {
+              doLogout();
+            }
           }}
         />
       )}

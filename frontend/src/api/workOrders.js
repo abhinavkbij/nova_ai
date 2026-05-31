@@ -93,6 +93,16 @@ export function startRepairTimer(repairId, technicianId) {
   return api.post(`/WorkOrderRepairs/${repairId}/timer/start`, null, { params: { technicianId } });
 }
 
+export function beginRepair(repairId, { technicianId } = {}) {
+  return api.post(`/WorkOrderRepairs/${repairId}/begin`, {
+    technicianId,
+    isWOStatusToActive: true,
+    isLabor: false,
+    isLaborOvertimeCheckRequired: false,
+    isTechnicianOvertimeCheckRequired: false,
+  });
+}
+
 export function completeRepair({ repairId, technicianId, maintShopId }) {
   return api.post('/WorkOrderRepairs/repair/end', { repairId, technicianId, maintShopId });
 }

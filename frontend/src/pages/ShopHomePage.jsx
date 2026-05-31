@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Search, ArrowRight, ChevronDown, ArrowUpDown, Mail,
-  LayoutGrid, List, LogOut, X, HelpCircle, Globe, Store, Check,
+  LayoutGrid, List, HelpCircle, Globe, Store, Check,
 } from 'lucide-react';
 import { getTechniciansPage, getShops } from '../api/technicians';
 import PinModal from '../components/PinModal';
@@ -28,7 +28,6 @@ export default function ShopHomePage() {
   const [rowsPerPage, setRowsPerPage]       = useState(10);
   const [rowsDropdownOpen, setRowsDropdownOpen] = useState(false);
   const [pinTechnician, setPinTechnician]   = useState(null);
-  const [logoutModal, setLogoutModal]       = useState(false);
 
   // API data
   const [technicians, setTechnicians]       = useState([]);
@@ -125,15 +124,6 @@ export default function ShopHomePage() {
         </div>
 
         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-          {/* Logout */}
-          <button
-            onClick={() => setLogoutModal(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            <LogOut className="w-4 h-4" />
-            Logout
-          </button>
-
           {/* Help */}
           <button className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-50 rounded-lg transition-colors">
             <HelpCircle className="w-4 h-4" />
@@ -367,29 +357,6 @@ export default function ShopHomePage() {
           </div>
         )}
       </div>
-
-      {/* ── Logout modal ────────────────────────────────────────────────── */}
-      {logoutModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-2xl shadow-2xl w-[360px] p-6">
-            <div className="flex items-start justify-between mb-3">
-              <h2 className="text-lg font-bold text-gray-900">Confirm Logging out</h2>
-              <button onClick={() => setLogoutModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors" aria-label="Close">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <p className="text-sm text-gray-500 mb-6">Are you sure you want to log out?</p>
-            <div className="flex justify-end">
-              <button
-                onClick={() => navigate('/')}
-                className="px-5 py-2 bg-blue-500 hover:bg-blue-600 text-white text-sm font-semibold rounded-lg transition-colors"
-              >
-                Log out
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ── PIN modal ───────────────────────────────────────────────────── */}
       {pinTechnician && (

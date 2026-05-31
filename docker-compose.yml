@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: technician
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: technician_app
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U technician -d technician_app"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://technician:${POSTGRES_PASSWORD}@postgres:5432/technician_app
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  nova:
+    build: ./nova_service
+    restart: unless-stopped
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      BACKEND_URL: http://backend:8000
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost}
+    depends_on:
+      - backend
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${PORT:-80}:80"
+    depends_on:
+      - backend
+      - nova
+
+volumes:
+  postgres_data:

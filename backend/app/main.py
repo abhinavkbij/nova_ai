@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -7,6 +8,9 @@ from app.database import engine, SessionLocal, Base
 import app.models  # noqa: F401 — ensures all ORM classes are registered
 
 from app.routers import shops, technicians, work_orders, shifts, lookups, tasks, notes, parts, assets
+
+_default_origins = "http://localhost:5173,http://localhost:3000"
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", _default_origins).split(",")
 
 
 @asynccontextmanager
@@ -41,7 +45,7 @@ app = FastAPI(title="Technician App API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

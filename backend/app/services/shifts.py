@@ -10,14 +10,21 @@ class ShiftNotFoundError(Exception):
 
 
 def begin_shift(db: Session, technician_id: int, shop_id: int) -> Shift:
-    """Returns the existing active shift or creates a new one."""
+    """Returns the existing active shift if it started today, otherwise ends any stale shift and creates a new one."""
     existing = (
         db.query(Shift)
         .filter(Shift.technician_id == technician_id, Shift.end_time.is_(None))
         .first()
     )
     if existing:
-        return existing
+        begin = existing.begin_time
+        if begin.tzinfo is None:
+            begin = begin.replace(tzinfo=timezone.utc)
+        if begin.date() == datetime.now(timezone.utc).date():
+            return existing
+        existing.end_time = datetime.now(timezone.utc)
+        db.commit()
+
     shift = Shift(
         technician_id=technician_id,
         shop_id=shop_id,

@@ -1,3 +1,6 @@
+# Environment — root .env holds secrets (POSTGRES_PASSWORD, GEMINI_API_KEY)
+.env
+
 # Python
 backend/.venv/
 nova_service/.env

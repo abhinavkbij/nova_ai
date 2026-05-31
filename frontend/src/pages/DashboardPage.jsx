@@ -6,7 +6,7 @@ import {
   Search, ArrowRight, LogOut, Plus, Mail,
   AlertCircle, ArrowUpCircle, MinusCircle, ArrowDownCircle,
 } from 'lucide-react';
-import { searchRepairs } from '../api/workOrders';
+import { searchRepairs, beginRepair } from '../api/workOrders';
 import { getPartsMessages, getRequestedParts } from '../api/parts';
 import { getStatusIndicator, submitIndirectActivity, beginShift, endShift } from '../api/technicians';
 import IndirectActivityModal from '../components/IndirectActivityModal';
@@ -67,7 +67,7 @@ function mapFasterWebRepair(item) {
     timeStandard: item.timeStandardHours == null ? '--' : `${Number(item.timeStandardHours).toFixed(1)}h`,
     dateIn:       formatRepairDate(item.inDate),
     isOpen:       item.status !== 'Complete',
-    rawStatus:    item.status,
+    rawStatus:    item.workOrderStatusCode === 'A' ? 'In Progress' : item.status,
     messageCount: item.messageCount ?? 0,
   };
 }
@@ -303,8 +303,28 @@ export default function DashboardPage() {
     return 'Good Evening,';
   };
 
-  const openRepairDetail = (repairId) => {
-    navigate(`/repair/${repairId}`, { state: { technician } });
+  const handleRepairAction = (wo) => {
+    if (getRepairActionLabel(wo) === 'View') {
+      navigate(`/repair/${wo.repairId}`, { state: { technician } });
+      return;
+    }
+    // Both Begin and Resume: update backend status_indicator, refresh from API, then navigate
+    beginRepair(wo.repairId, { technicianId: technician.id })
+      .then(() => getStatusIndicator(technician.id))
+      .then((res) => {
+        const data = res.data;
+        if (data?.statusIndicator) {
+          setCurrentActivity(data.statusIndicator);
+          localStorage.setItem(activityKey, data.statusIndicator);
+        }
+        setRepairs((prev) =>
+          prev.map((r) =>
+            r.repairId === wo.repairId ? { ...r, rawStatus: 'In Progress', woStatus: 'A' } : r
+          )
+        );
+      })
+      .catch(() => {})
+      .finally(() => navigate(`/repair/${wo.repairId}`, { state: { technician } }));
   };
 
   const buildRepairPages = () => {
@@ -413,7 +433,13 @@ export default function DashboardPage() {
               <button
                 onClick={() => {
                   if (shiftActive) {
-                    endShift(technician.id).then(() => { setShiftActive(false); setShiftStartedAt(null); setShiftDuration(0); }).catch(() => {});
+                    endShift(technician.id)
+                      .catch(() => {})
+                      .finally(() => {
+                        localStorage.removeItem(activityKey);
+                        sessionStorage.removeItem('loggedInTechnician');
+                        navigate('/');
+                      });
                   } else {
                     beginShift(technician.id, technician.shopId)
                       .then((response) => {
@@ -621,10 +647,10 @@ export default function DashboardPage() {
                   <EmptyState message="No work orders currently assigned" />
                 ) : repairsViewMode === 'grid' ? (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {pagedRepairs.map((wo) => <WorkOrderCard key={wo.id} wo={wo} onOpen={openRepairDetail} />)}
+                    {pagedRepairs.map((wo) => <WorkOrderCard key={wo.id} wo={wo} onOpen={() => handleRepairAction(wo)} />)}
                   </div>
                 ) : (
-                  <RepairsTable rows={pagedRepairs} onOpen={openRepairDetail} />
+                  <RepairsTable rows={pagedRepairs} onOpen={(wo) => handleRepairAction(wo)} />
                 )}
 
                 {/* Repairs pagination */}
@@ -805,14 +831,17 @@ export default function DashboardPage() {
         <IndirectActivityModal
           onClose={() => setIndirectModal(false)}
           onSelect={(activity) => {
-            const label = typeof activity === 'string'
-              ? activity
-              : (activity?.partName || activity?.description || activity?.activityName || activity?.name || activity?.activityDesc || String(activity));
             const id = typeof activity === 'object' ? activity?.repairGroupComponentActionID : null;
-            setCurrentActivity(label);
-            localStorage.setItem(activityKey, label);
             setIndirectModal(false);
-            if (id != null) submitIndirectActivity(technician.id, id).catch(() => {});
+            const doLogout = () => {
+              sessionStorage.removeItem('loggedInTechnician');
+              navigate('/');
+            };
+            if (id != null) {
+              submitIndirectActivity(technician.id, id).catch(() => {}).finally(doLogout);
+            } else {
+              doLogout();
+            }
           }}
         />
       )}
@@ -947,7 +976,7 @@ function RepairsTable({ rows, onOpen }) {
                 </td>
                 <td className="px-3 py-3">
                   <button
-                    onClick={() => onOpen?.(wo.repairId)}
+                    onClick={() => onOpen?.(wo)}
                     className="px-4 py-1.5 border border-gray-200 rounded-lg text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors whitespace-nowrap"
                   >
                     {actionLabel}

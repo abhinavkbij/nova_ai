@@ -9,6 +9,7 @@ from app.database import get_db
 from app.models.technician import Technician
 from app.models.shift import Shift
 from app.models.lookup import IndirectActivity
+from app.models.work_order import WorkOrderRepair
 from app.schemas.technician import TechnicianOut, PaginatedTechnicians, PinAuthOut
 from app.schemas.shift import StatusIndicatorOut
 from app.schemas.lookup import IndirectActivityOut
@@ -204,14 +205,34 @@ def get_status_indicator(technician_id: int, db: Session = Depends(get_db)):
     now = datetime.now(timezone.utc)
     begin = active_shift.begin_time
     if begin.tzinfo is None:
-        from datetime import timezone as tz
-        begin = begin.replace(tzinfo=tz.utc)
+        begin = begin.replace(tzinfo=timezone.utc)
+
+    if begin.date() != now.date():
+        active_shift.end_time = now
+        db.commit()
+        return StatusIndicatorOut(isActive=False)
+
     duration = int((now - begin).total_seconds())
+
+    status_indicator = active_shift.status_indicator
+    if not status_indicator:
+        active_repair = (
+            db.query(WorkOrderRepair)
+            .filter(
+                WorkOrderRepair.technician_id == technician_id,
+                WorkOrderRepair.wo_status_code == "A",
+                WorkOrderRepair.is_open == True,
+            )
+            .order_by(WorkOrderRepair.date_in.desc())
+            .first()
+        )
+        if active_repair:
+            status_indicator = active_repair.wo_number or f"Repair {active_repair.id}"
 
     return StatusIndicatorOut(
         shiftId=active_shift.id,
         isActive=True,
-        statusIndicator=active_shift.status_indicator,
+        statusIndicator=status_indicator,
         startedAt=active_shift.begin_time,
         durationSeconds=duration,
     )
